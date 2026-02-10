@@ -5,3 +5,8 @@
 *.md.bak
 target
 .ntm
+
+
+# Added by cargo
+
+/target
