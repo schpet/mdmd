@@ -1,8 +1,9 @@
 mod parse;
 mod render;
 
-use std::{env, fs, io, process};
+use std::{fs, io, path::Path, process};
 
+use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Layout, Position, Rect},
@@ -32,6 +33,14 @@ struct SearchMatch {
     column_end: usize,
 }
 
+/// Command-line arguments.
+#[derive(Parser)]
+#[command(name = "mdmd", version, about = "A TUI markdown viewer and navigator")]
+struct Cli {
+    /// Path to a markdown file to view
+    file: String,
+}
+
 /// State for vim-like `/` search.
 struct SearchState {
     /// The current search query.
@@ -47,15 +56,36 @@ struct SearchState {
 }
 
 fn main() -> io::Result<()> {
-    let path = match env::args().nth(1) {
-        Some(p) => p,
-        None => {
-            eprintln!("Usage: mdmd <file.md>");
+    let cli = Cli::parse();
+    let path = Path::new(&cli.file);
+
+    // Check the file extension before attempting to read
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("md" | "markdown" | "mdx" | "mdown" | "mkd" | "mkdn") => {}
+        Some(ext) => {
+            eprintln!("Error: '{ext}' is not a recognized markdown extension.");
+            eprintln!("Expected a markdown file (.md, .markdown, .mdx, .mdown, .mkd, .mkdn).");
             process::exit(1);
         }
-    };
-    let source = fs::read_to_string(&path).unwrap_or_else(|e| {
-        eprintln!("Error reading {path}: {e}");
+        None => {
+            eprintln!("Error: '{}' has no file extension.", cli.file);
+            eprintln!("Expected a markdown file (.md, .markdown, .mdx, .mdown, .mkd, .mkdn).");
+            process::exit(1);
+        }
+    }
+
+    let source = fs::read_to_string(path).unwrap_or_else(|e| {
+        match e.kind() {
+            io::ErrorKind::NotFound => {
+                eprintln!("Error: file not found: {}", cli.file);
+            }
+            io::ErrorKind::PermissionDenied => {
+                eprintln!("Error: permission denied: {}", cli.file);
+            }
+            _ => {
+                eprintln!("Error reading '{}': {e}", cli.file);
+            }
+        }
         process::exit(1);
     });
     let doc = parse::parse(&source);
