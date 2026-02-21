@@ -24,6 +24,17 @@ pub enum BlockKind {
     Table,
 }
 
+/// A link whose text appears inline within a [`ContentBlock`]'s content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineLink {
+    /// Byte offset of the link text start within `ContentBlock::content`.
+    pub start: usize,
+    /// Byte offset of the link text end (exclusive) within `ContentBlock::content`.
+    pub end: usize,
+    /// Destination URL.
+    pub url: String,
+}
+
 /// A top-level content block in the document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentBlock {
@@ -34,6 +45,8 @@ pub struct ContentBlock {
     pub line_end: usize,
     /// Flattened text content of the block.
     pub content: String,
+    /// Links whose text appears within `content`, with byte offsets.
+    pub inline_links: Vec<InlineLink>,
 }
 
 /// A heading extracted from the document.
@@ -195,6 +208,10 @@ pub fn parse(source: &str) -> ParsedDocument {
     let mut link_line: usize = 0;
     let mut link_text_buf = String::new();
 
+    // Inline link tracking (byte offsets within current block's text_buf)
+    let mut link_content_start: usize = 0;
+    let mut block_inline_links: Vec<InlineLink> = Vec::new();
+
     for (event, range) in parser.into_offset_iter() {
         match &event {
             Event::Start(tag) => {
@@ -235,6 +252,7 @@ pub fn parse(source: &str) -> ParsedDocument {
                             Some((dest_url.to_string(), link_type_to_kind(link_type, false)));
                         link_line = line_index.line_at(range.start);
                         link_text_buf.clear();
+                        link_content_start = text_buf.len();
                     }
                     Tag::Image {
                         link_type,
@@ -245,6 +263,7 @@ pub fn parse(source: &str) -> ParsedDocument {
                             Some((dest_url.to_string(), link_type_to_kind(link_type, true)));
                         link_line = line_index.line_at(range.start);
                         link_text_buf.clear();
+                        link_content_start = text_buf.len();
                     }
                     _ => {}
                 }
@@ -263,6 +282,7 @@ pub fn parse(source: &str) -> ParsedDocument {
                                 line_start: start_line,
                                 line_end: end_line,
                                 content: text_buf.clone(),
+                                inline_links: std::mem::take(&mut block_inline_links),
                             });
                         }
                         text_buf.clear();
@@ -284,6 +304,14 @@ pub fn parse(source: &str) -> ParsedDocument {
                 // Finalize link / image
                 if matches!(tag_end, TagEnd::Link | TagEnd::Image) {
                     if let Some((url, kind)) = in_link.take() {
+                        // Record inline link for block-level rendering
+                        if block_depth > 0 {
+                            block_inline_links.push(InlineLink {
+                                start: link_content_start,
+                                end: text_buf.len(),
+                                url: url.clone(),
+                            });
+                        }
                         links.push(Link {
                             text: link_text_buf.clone(),
                             url,
@@ -333,6 +361,7 @@ pub fn parse(source: &str) -> ParsedDocument {
                         line_end: line_index
                             .line_at(range.end.saturating_sub(1).max(range.start)),
                         content: html.to_string(),
+                        inline_links: Vec::new(),
                     });
                 } else {
                     text_buf.push_str(html);
@@ -350,6 +379,7 @@ pub fn parse(source: &str) -> ParsedDocument {
                     line_start: line,
                     line_end: line,
                     content: String::new(),
+                    inline_links: Vec::new(),
                 });
             }
 

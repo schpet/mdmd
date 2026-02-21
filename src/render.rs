@@ -8,7 +8,7 @@ use ratatui::{
     text::{Line, Span, Text},
 };
 
-use crate::parse::{BlockKind, ContentBlock, ParsedDocument};
+use crate::parse::{BlockKind, ContentBlock, InlineLink, ParsedDocument};
 
 /// A heading's position in the rendered output.
 #[derive(Debug, Clone)]
@@ -21,12 +21,29 @@ pub struct HeadingPosition {
     pub text: String,
 }
 
+/// A link's position in the rendered output, for Tab navigation and focus highlighting.
+#[derive(Debug, Clone)]
+pub struct LinkPosition {
+    /// 0-based line index in the rendered output.
+    pub rendered_line: usize,
+    /// 0-based column where the link text starts.
+    pub column_start: usize,
+    /// 0-based column where the link text ends (exclusive).
+    pub column_end: usize,
+    /// Destination URL.
+    pub url: String,
+    /// Display text of the link.
+    pub text: String,
+}
+
 /// The result of rendering a parsed document.
 pub struct RenderedDocument {
     /// Styled text ready for display.
     pub text: Text<'static>,
     /// Positions of all headings in the rendered output.
     pub heading_lines: Vec<HeadingPosition>,
+    /// Positions of all links in the rendered output.
+    pub link_positions: Vec<LinkPosition>,
 }
 
 /// Convert a parsed markdown document into styled [`Text`] ready for rendering,
@@ -36,6 +53,7 @@ pub struct RenderedDocument {
 pub fn render_document(doc: &ParsedDocument) -> RenderedDocument {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut heading_lines: Vec<HeadingPosition> = Vec::new();
+    let mut link_positions: Vec<LinkPosition> = Vec::new();
 
     for (i, block) in doc.blocks.iter().enumerate() {
         if i > 0 {
@@ -49,24 +67,39 @@ pub fn render_document(doc: &ParsedDocument) -> RenderedDocument {
                 text: block.content.clone(),
             });
         }
-        render_block(block, &mut lines);
+        render_block(block, &mut lines, &mut link_positions);
     }
 
     RenderedDocument {
         text: Text::from(lines),
         heading_lines,
+        link_positions,
     }
 }
 
-fn render_block(block: &ContentBlock, lines: &mut Vec<Line<'static>>) {
+fn render_block(
+    block: &ContentBlock,
+    lines: &mut Vec<Line<'static>>,
+    link_positions: &mut Vec<LinkPosition>,
+) {
     match &block.kind {
-        BlockKind::Heading(level) => render_heading(*level, &block.content, lines),
-        BlockKind::Paragraph => render_paragraph(&block.content, lines),
+        BlockKind::Heading(level) => {
+            render_heading(*level, &block.content, &block.inline_links, lines, link_positions)
+        }
+        BlockKind::Paragraph => {
+            render_paragraph(&block.content, &block.inline_links, lines, link_positions)
+        }
         BlockKind::CodeBlock => render_code_block(&block.content, lines),
-        BlockKind::List => render_list(&block.content, lines),
-        BlockKind::BlockQuote => render_block_quote(&block.content, lines),
+        BlockKind::List => {
+            render_list(&block.content, &block.inline_links, lines, link_positions)
+        }
+        BlockKind::BlockQuote => {
+            render_block_quote(&block.content, &block.inline_links, lines, link_positions)
+        }
         BlockKind::ThematicBreak => render_thematic_break(lines),
-        BlockKind::HtmlBlock => render_paragraph(&block.content, lines),
+        BlockKind::HtmlBlock => {
+            render_paragraph(&block.content, &block.inline_links, lines, link_positions)
+        }
         BlockKind::Table => render_table(&block.content, lines),
     }
 }
@@ -94,20 +127,131 @@ fn heading_prefix(level: u8) -> &'static str {
     }
 }
 
-fn render_heading(level: u8, content: &str, lines: &mut Vec<Line<'static>>) {
+/// Style for link text (non-focused).
+fn link_style() -> Style {
+    Style::default()
+        .fg(Color::Blue)
+        .add_modifier(Modifier::UNDERLINED)
+}
+
+/// Split a single line of text at link boundaries, producing styled spans.
+///
+/// `line_text` is the text to render for this line.
+/// `line_content_offset` is the byte offset of `line_text` within the block's content.
+/// `column_offset` is the display column where content starts (after any prefix spans).
+fn split_line_at_links(
+    line_text: &str,
+    line_content_offset: usize,
+    inline_links: &[InlineLink],
+    base_style: Style,
+    column_offset: usize,
+    rendered_line_idx: usize,
+    link_positions: &mut Vec<LinkPosition>,
+) -> Vec<Span<'static>> {
+    let line_start = line_content_offset;
+    let line_end = line_content_offset + line_text.len();
+
+    // Collect links that overlap with this line
+    let overlapping: Vec<&InlineLink> = inline_links
+        .iter()
+        .filter(|l| l.start < line_end && l.end > line_start)
+        .collect();
+
+    if overlapping.is_empty() {
+        return vec![Span::styled(line_text.to_owned(), base_style)];
+    }
+
+    let ls = link_style();
+    let mut spans = Vec::new();
+    let mut pos = line_start;
+
+    for link in &overlapping {
+        let vis_start = link.start.max(line_start);
+        let vis_end = link.end.min(line_end);
+
+        // Text before this link
+        if vis_start > pos {
+            let before = &line_text[pos - line_start..vis_start - line_start];
+            spans.push(Span::styled(before.to_owned(), base_style));
+        }
+
+        // Link text
+        let link_slice_start = vis_start - line_start;
+        let link_slice_end = vis_end - line_start;
+        let link_text = &line_text[link_slice_start..link_slice_end];
+        spans.push(Span::styled(link_text.to_owned(), ls));
+
+        // Record position
+        let col_start = column_offset + link_slice_start;
+        link_positions.push(LinkPosition {
+            rendered_line: rendered_line_idx,
+            column_start: col_start,
+            column_end: col_start + link_text.len(),
+            url: link.url.clone(),
+            text: link_text.to_owned(),
+        });
+
+        pos = vis_end;
+    }
+
+    // Text after the last link
+    if pos < line_end {
+        let after = &line_text[pos - line_start..];
+        spans.push(Span::styled(after.to_owned(), base_style));
+    }
+
+    spans
+}
+
+fn render_heading(
+    level: u8,
+    content: &str,
+    inline_links: &[InlineLink],
+    lines: &mut Vec<Line<'static>>,
+    link_positions: &mut Vec<LinkPosition>,
+) {
     let style = heading_style(level);
     let prefix = heading_prefix(level);
+    let prefix_width = prefix.len();
+
+    let mut content_offset = 0;
     for text_line in content.lines() {
-        lines.push(Line::from(Span::styled(
-            format!("{prefix}{text_line}"),
+        let mut spans = vec![Span::styled(prefix.to_owned(), style)];
+        let link_spans = split_line_at_links(
+            text_line,
+            content_offset,
+            inline_links,
             style,
-        )));
+            prefix_width,
+            lines.len(),
+            link_positions,
+        );
+        spans.extend(link_spans);
+        lines.push(Line::from(spans));
+        content_offset += text_line.len() + 1;
     }
 }
 
-fn render_paragraph(content: &str, lines: &mut Vec<Line<'static>>) {
+fn render_paragraph(
+    content: &str,
+    inline_links: &[InlineLink],
+    lines: &mut Vec<Line<'static>>,
+    link_positions: &mut Vec<LinkPosition>,
+) {
+    let base_style = Style::default();
+    let mut content_offset = 0;
     for text_line in content.lines() {
-        lines.push(Line::from(Span::raw(text_line.to_owned())));
+        let spans = split_line_at_links(
+            text_line,
+            content_offset,
+            inline_links,
+            base_style,
+            0,
+            lines.len(),
+            link_positions,
+        );
+        lines.push(Line::from(spans));
+        content_offset += text_line.len() + 1;
     }
 }
 
@@ -125,27 +269,65 @@ fn render_code_block(content: &str, lines: &mut Vec<Line<'static>>) {
     lines.push(Line::from(Span::styled("└───", border_style)));
 }
 
-fn render_list(content: &str, lines: &mut Vec<Line<'static>>) {
+fn render_list(
+    content: &str,
+    inline_links: &[InlineLink],
+    lines: &mut Vec<Line<'static>>,
+    link_positions: &mut Vec<LinkPosition>,
+) {
     let bullet_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let base_style = Style::default();
+    let prefix_width = 4; // "  • " is 4 display columns
+
+    let mut content_offset = 0;
     for text_line in content.lines() {
         let trimmed = text_line.trim();
         if !trimmed.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled("  • ", bullet_style),
-                Span::raw(trimmed.to_owned()),
-            ]));
+            let leading_ws = text_line.len() - text_line.trim_start().len();
+            let trimmed_offset = content_offset + leading_ws;
+
+            let mut spans = vec![Span::styled("  • ", bullet_style)];
+            let link_spans = split_line_at_links(
+                trimmed,
+                trimmed_offset,
+                inline_links,
+                base_style,
+                prefix_width,
+                lines.len(),
+                link_positions,
+            );
+            spans.extend(link_spans);
+            lines.push(Line::from(spans));
         }
+        content_offset += text_line.len() + 1;
     }
 }
 
-fn render_block_quote(content: &str, lines: &mut Vec<Line<'static>>) {
+fn render_block_quote(
+    content: &str,
+    inline_links: &[InlineLink],
+    lines: &mut Vec<Line<'static>>,
+    link_positions: &mut Vec<LinkPosition>,
+) {
     let bar_style = Style::default().fg(Color::DarkGray);
     let text_style = Style::default().add_modifier(Modifier::ITALIC).fg(Color::Gray);
+    let prefix_width = 4; // "  ▌ " is 4 display columns
+
+    let mut content_offset = 0;
     for text_line in content.lines() {
-        lines.push(Line::from(vec![
-            Span::styled("  ▌ ", bar_style),
-            Span::styled(text_line.to_owned(), text_style),
-        ]));
+        let mut spans = vec![Span::styled("  ▌ ", bar_style)];
+        let link_spans = split_line_at_links(
+            text_line,
+            content_offset,
+            inline_links,
+            text_style,
+            prefix_width,
+            lines.len(),
+            link_positions,
+        );
+        spans.extend(link_spans);
+        lines.push(Line::from(spans));
+        content_offset += text_line.len() + 1;
     }
 }
 
