@@ -104,7 +104,7 @@ fn render_block(
     }
 }
 
-fn heading_style(level: u8) -> Style {
+pub fn heading_style(level: u8) -> Style {
     let base = Style::default().add_modifier(Modifier::BOLD);
     match level {
         1 => base.fg(Color::Magenta),
