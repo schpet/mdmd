@@ -1,7 +1,7 @@
 mod parse;
 mod render;
 
-use std::{fs, io, path::Path, process};
+use std::{fs, io, path::{Path, PathBuf}, process};
 
 use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -55,6 +55,13 @@ struct SearchState {
     saved_scroll: usize,
 }
 
+/// Saved navigation state for back-navigation when following links.
+struct NavigationEntry {
+    file_path: PathBuf,
+    scroll_offset: usize,
+    focused_link: Option<usize>,
+}
+
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
     let path = Path::new(&cli.file);
@@ -88,18 +95,21 @@ fn main() -> io::Result<()> {
         }
         process::exit(1);
     });
-    let doc = parse::parse(&source);
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
-    ratatui::run(|terminal| run(terminal, &doc))
+    ratatui::run(|terminal| run(terminal, &canonical, source))
 }
 
-fn run(terminal: &mut DefaultTerminal, doc: &parse::ParsedDocument) -> io::Result<()> {
-    let rendered = render::render_document(doc);
-    let total_lines = rendered.text.lines.len();
+fn run(terminal: &mut DefaultTerminal, initial_path: &Path, initial_source: String) -> io::Result<()> {
+    let mut current_path = initial_path.to_path_buf();
+    let doc = parse::parse(&initial_source);
+    let mut rendered = render::render_document(&doc);
+    let mut total_lines = rendered.text.lines.len();
     let mut scroll_offset: usize = 0;
     let mut focused_link: Option<usize> = None;
     let mut outline: Option<OutlineState> = None;
     let mut search: Option<SearchState> = None;
+    let mut nav_stack: Vec<NavigationEntry> = Vec::new();
 
     loop {
         terminal.draw(|frame| {
@@ -111,6 +121,8 @@ fn run(terminal: &mut DefaultTerminal, doc: &parse::ParsedDocument) -> io::Resul
                 focused_link,
                 outline.as_ref().map(|o| o.selected),
                 search.as_ref(),
+                &current_path,
+                !nav_stack.is_empty(),
             );
         })?;
 
@@ -427,6 +439,52 @@ fn run(terminal: &mut DefaultTerminal, doc: &parse::ParsedDocument) -> io::Resul
                         }
                     }
 
+                    // Follow focused link (Enter)
+                    KeyCode::Enter => {
+                        if let Some(link_idx) = focused_link {
+                            if let Some(link) = rendered.link_positions.get(link_idx) {
+                                let url = link.url.clone();
+                                if is_external_url(&url) {
+                                    open_url_in_browser(&url);
+                                } else if let Some(target) =
+                                    resolve_markdown_link(&current_path, &url)
+                                {
+                                    if let Ok(new_source) = fs::read_to_string(&target) {
+                                        nav_stack.push(NavigationEntry {
+                                            file_path: current_path.clone(),
+                                            scroll_offset,
+                                            focused_link,
+                                        });
+                                        current_path = target;
+                                        let new_doc = parse::parse(&new_source);
+                                        rendered = render::render_document(&new_doc);
+                                        total_lines = rendered.text.lines.len();
+                                        scroll_offset = 0;
+                                        focused_link = None;
+                                        outline = None;
+                                        search = None;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Navigate back (Backspace)
+                    KeyCode::Backspace => {
+                        if let Some(entry) = nav_stack.pop() {
+                            if let Ok(new_source) = fs::read_to_string(&entry.file_path) {
+                                current_path = entry.file_path;
+                                let new_doc = parse::parse(&new_source);
+                                rendered = render::render_document(&new_doc);
+                                total_lines = rendered.text.lines.len();
+                                scroll_offset = entry.scroll_offset;
+                                focused_link = entry.focused_link;
+                                outline = None;
+                                search = None;
+                            }
+                        }
+                    }
+
                     // Enter search mode
                     KeyCode::Char('/') => {
                         search = Some(SearchState {
@@ -529,6 +587,58 @@ fn advance_search_match(search: &mut Option<SearchState>, forward: bool) {
     }
 }
 
+/// Check if a URL is an external URL (http/https/mailto).
+fn is_external_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:")
+}
+
+/// Resolve a link URL to a local markdown file path.
+/// Returns None if the link is not a resolvable local markdown file.
+fn resolve_markdown_link(current_file: &Path, url: &str) -> Option<PathBuf> {
+    // Skip fragment-only links
+    if url.starts_with('#') {
+        return None;
+    }
+
+    // Strip fragment if present
+    let path_part = url.split('#').next()?;
+    if path_part.is_empty() {
+        return None;
+    }
+
+    // Resolve relative to the directory containing the current file
+    let base_dir = current_file.parent()?;
+    let target = base_dir.join(path_part);
+
+    // Check if it's a markdown file
+    let ext = target.extension()?.to_str()?;
+    if !matches!(ext, "md" | "markdown" | "mdx" | "mdown" | "mkd" | "mkdn") {
+        return None;
+    }
+
+    // Check if file exists
+    if target.is_file() {
+        Some(fs::canonicalize(&target).unwrap_or(target))
+    } else {
+        None
+    }
+}
+
+/// Open an external URL in the system browser.
+fn open_url_in_browser(url: &str) {
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(program)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
 fn ui(
     frame: &mut Frame,
     rendered: &RenderedDocument,
@@ -537,6 +647,8 @@ fn ui(
     focused_link: Option<usize>,
     outline_selected: Option<usize>,
     search: Option<&SearchState>,
+    current_file: &Path,
+    can_go_back: bool,
 ) {
     let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
@@ -656,11 +768,22 @@ fn ui(
         })
         .unwrap_or_default();
 
+    let nav_info = if can_go_back {
+        let name = current_file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?");
+        format!("  \u{2190} {}", name)
+    } else {
+        String::new()
+    };
+
     let status = format!(
-        " Line {}/{} \u{2014} {}{}{}{}",
+        " Line {}/{} \u{2014} {}{}{}{}{}",
         scroll_offset + 1,
         total_lines,
         position,
+        nav_info,
         heading_ctx,
         link_info,
         search_info,
