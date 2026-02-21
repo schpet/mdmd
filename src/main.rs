@@ -22,6 +22,30 @@ struct OutlineState {
     saved_scroll: usize,
 }
 
+/// A single search match position in the rendered output.
+struct SearchMatch {
+    /// 0-based line index in the rendered output.
+    rendered_line: usize,
+    /// 0-based column where the match starts (byte offset in line text).
+    column_start: usize,
+    /// 0-based column where the match ends (exclusive, byte offset).
+    column_end: usize,
+}
+
+/// State for vim-like `/` search.
+struct SearchState {
+    /// The current search query.
+    query: String,
+    /// Whether the user is still typing (true) or has confirmed with Enter (false).
+    typing: bool,
+    /// All match positions in the document.
+    matches: Vec<SearchMatch>,
+    /// Index into `matches` of the current/focused match.
+    current_match: Option<usize>,
+    /// Scroll offset saved when search was initiated (for Esc restore).
+    saved_scroll: usize,
+}
+
 fn main() -> io::Result<()> {
     let path = match env::args().nth(1) {
         Some(p) => p,
@@ -45,6 +69,7 @@ fn run(terminal: &mut DefaultTerminal, doc: &parse::ParsedDocument) -> io::Resul
     let mut scroll_offset: usize = 0;
     let mut focused_link: Option<usize> = None;
     let mut outline: Option<OutlineState> = None;
+    let mut search: Option<SearchState> = None;
 
     loop {
         terminal.draw(|frame| {
@@ -55,6 +80,7 @@ fn run(terminal: &mut DefaultTerminal, doc: &parse::ParsedDocument) -> io::Resul
                 total_lines,
                 focused_link,
                 outline.as_ref().map(|o| o.selected),
+                search.as_ref(),
             );
         })?;
 
@@ -108,6 +134,64 @@ fn run(terminal: &mut DefaultTerminal, doc: &parse::ParsedDocument) -> io::Resul
                         outline = None;
                     }
                     _ => {}
+                }
+            } else if search.as_ref().map_or(false, |s| s.typing) {
+                // Search typing mode — handle search input
+                let mut cancel = false;
+                match key.code {
+                    KeyCode::Enter => {
+                        let empty = search.as_ref().map_or(true, |s| s.matches.is_empty());
+                        if empty {
+                            cancel = true;
+                        } else if let Some(ref mut s) = search {
+                            s.typing = false;
+                        }
+                    }
+                    KeyCode::Esc => {
+                        // Restore scroll position from before search started
+                        if let Some(ref s) = search {
+                            scroll_offset = s.saved_scroll;
+                        }
+                        cancel = true;
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(ref mut s) = search {
+                            s.query.pop();
+                            s.matches = find_matches(&rendered, &s.query);
+                            s.current_match = nearest_match_from(&s.matches, s.saved_scroll);
+                        }
+                    }
+                    KeyCode::Char('n')
+                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        advance_search_match(&mut search, true);
+                    }
+                    KeyCode::Char('p')
+                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        advance_search_match(&mut search, false);
+                    }
+                    KeyCode::Char(c) => {
+                        if let Some(ref mut s) = search {
+                            s.query.push(c);
+                            s.matches = find_matches(&rendered, &s.query);
+                            s.current_match = nearest_match_from(&s.matches, s.saved_scroll);
+                        }
+                    }
+                    _ => {}
+                }
+                if cancel {
+                    search = None;
+                }
+                // Auto-scroll to current match
+                if let Some(ref s) = search {
+                    if let Some(idx) = s.current_match {
+                        let line = s.matches[idx].rendered_line;
+                        if line < scroll_offset || line >= scroll_offset + viewport_height {
+                            scroll_offset =
+                                line.saturating_sub(viewport_height / 3).min(max_scroll);
+                        }
+                    }
                 }
             } else {
                 // Normal mode — handle regular keys
@@ -182,6 +266,27 @@ fn run(terminal: &mut DefaultTerminal, doc: &parse::ParsedDocument) -> io::Resul
                         focused_link = None;
                     }
 
+                    // Next search match (Ctrl-n)
+                    KeyCode::Char('n')
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && search.is_some() =>
+                    {
+                        advance_search_match(&mut search, true);
+                        if let Some(ref s) = search {
+                            if let Some(idx) = s.current_match {
+                                let line = s.matches[idx].rendered_line;
+                                if line < scroll_offset
+                                    || line >= scroll_offset + viewport_height
+                                {
+                                    scroll_offset = line
+                                        .saturating_sub(viewport_height / 3)
+                                        .min(max_scroll);
+                                }
+                            }
+                        }
+                        focused_link = None;
+                    }
+
                     // Next heading
                     KeyCode::Char('n') => {
                         if let Some(pos) = rendered
@@ -190,6 +295,27 @@ fn run(terminal: &mut DefaultTerminal, doc: &parse::ParsedDocument) -> io::Resul
                             .find(|h| h.rendered_line > scroll_offset)
                         {
                             scroll_offset = pos.rendered_line.min(max_scroll);
+                        }
+                        focused_link = None;
+                    }
+
+                    // Previous search match (Ctrl-p)
+                    KeyCode::Char('p')
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && search.is_some() =>
+                    {
+                        advance_search_match(&mut search, false);
+                        if let Some(ref s) = search {
+                            if let Some(idx) = s.current_match {
+                                let line = s.matches[idx].rendered_line;
+                                if line < scroll_offset
+                                    || line >= scroll_offset + viewport_height
+                                {
+                                    scroll_offset = line
+                                        .saturating_sub(viewport_height / 3)
+                                        .min(max_scroll);
+                                }
+                            }
                         }
                         focused_link = None;
                     }
@@ -271,9 +397,25 @@ fn run(terminal: &mut DefaultTerminal, doc: &parse::ParsedDocument) -> io::Resul
                         }
                     }
 
-                    // Escape clears link focus
-                    KeyCode::Esc => {
+                    // Enter search mode
+                    KeyCode::Char('/') => {
+                        search = Some(SearchState {
+                            query: String::new(),
+                            typing: true,
+                            matches: Vec::new(),
+                            current_match: None,
+                            saved_scroll: scroll_offset,
+                        });
                         focused_link = None;
+                    }
+
+                    // Escape clears search (if active) or link focus
+                    KeyCode::Esc => {
+                        if search.is_some() {
+                            search = None;
+                        } else {
+                            focused_link = None;
+                        }
                     }
 
                     _ => {}
@@ -296,6 +438,67 @@ fn current_heading_context(
         .find(|h| h.rendered_line <= scroll_offset)
 }
 
+/// Find all case-insensitive occurrences of `query` in the rendered text.
+fn find_matches(rendered: &RenderedDocument, query: &str) -> Vec<SearchMatch> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let query_lower = query.to_lowercase();
+    let mut matches = Vec::new();
+    for (line_idx, line) in rendered.text.lines.iter().enumerate() {
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let text_lower = text.to_lowercase();
+        let mut pos = 0;
+        while pos < text_lower.len() {
+            match text_lower[pos..].find(&query_lower) {
+                Some(rel) => {
+                    let start = pos + rel;
+                    matches.push(SearchMatch {
+                        rendered_line: line_idx,
+                        column_start: start,
+                        column_end: start + query_lower.len(),
+                    });
+                    pos = start + 1;
+                }
+                None => break,
+            }
+        }
+    }
+    matches
+}
+
+/// Find the nearest match at or after `scroll_offset`, wrapping to the first match if needed.
+fn nearest_match_from(matches: &[SearchMatch], scroll_offset: usize) -> Option<usize> {
+    if matches.is_empty() {
+        return None;
+    }
+    matches
+        .iter()
+        .position(|m| m.rendered_line >= scroll_offset)
+        .or(Some(0))
+}
+
+/// Advance the current search match forward or backward.
+fn advance_search_match(search: &mut Option<SearchState>, forward: bool) {
+    if let Some(ref mut s) = search {
+        if s.matches.is_empty() {
+            return;
+        }
+        s.current_match = Some(if forward {
+            match s.current_match {
+                Some(idx) => (idx + 1) % s.matches.len(),
+                None => 0,
+            }
+        } else {
+            match s.current_match {
+                Some(0) => s.matches.len() - 1,
+                Some(idx) => idx - 1,
+                None => s.matches.len() - 1,
+            }
+        });
+    }
+}
+
 fn ui(
     frame: &mut Frame,
     rendered: &RenderedDocument,
@@ -303,6 +506,7 @@ fn ui(
     total_lines: usize,
     focused_link: Option<usize>,
     outline_selected: Option<usize>,
+    search: Option<&SearchState>,
 ) {
     let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
@@ -312,6 +516,35 @@ fn ui(
     // Render scrolled content
     let widget = Paragraph::new(rendered.text.clone()).scroll((scroll_offset as u16, 0));
     frame.render_widget(widget, chunks[0]);
+
+    // Apply search match highlights
+    if let Some(s) = search {
+        if !s.query.is_empty() {
+            let match_style = Style::default().bg(Color::Yellow).fg(Color::Black);
+            let current_style = Style::default()
+                .bg(Color::LightGreen)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD);
+
+            for (idx, m) in s.matches.iter().enumerate() {
+                let rel_line = m.rendered_line as isize - scroll_offset as isize;
+                if rel_line >= 0 && (rel_line as usize) < viewport_height {
+                    let row = chunks[0].y + rel_line as u16;
+                    let style = if s.current_match == Some(idx) {
+                        current_style
+                    } else {
+                        match_style
+                    };
+                    for col in m.column_start..m.column_end {
+                        let pos = Position::new(chunks[0].x + col as u16, row);
+                        if let Some(cell) = frame.buffer_mut().cell_mut(pos) {
+                            cell.set_style(style);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Apply focus highlight overlay on the focused link
     if let Some(link) = focused_link.and_then(|idx| rendered.link_positions.get(idx)) {
@@ -336,7 +569,30 @@ fn ui(
         render_outline(frame, &rendered.heading_lines, selected, chunks[0]);
     }
 
-    // Render status bar with scroll position indicator
+    // Render status bar or search input bar
+    if let Some(s) = search {
+        if s.typing {
+            // Search input bar
+            let match_info = if s.matches.is_empty() && !s.query.is_empty() {
+                " [No matches]".to_owned()
+            } else if !s.matches.is_empty() {
+                let current = s.current_match.map(|i| i + 1).unwrap_or(0);
+                format!(" [{}/{}]", current, s.matches.len())
+            } else {
+                String::new()
+            };
+            let bar_text = format!("/{}|{}", s.query, match_info);
+            let bar = Paragraph::new(Span::styled(
+                bar_text,
+                Style::default().fg(Color::White).bg(Color::DarkGray),
+            ))
+            .style(Style::default().bg(Color::DarkGray));
+            frame.render_widget(bar, chunks[1]);
+            return;
+        }
+    }
+
+    // Render normal status bar with scroll position indicator
     let position = if total_lines == 0 {
         "Empty".to_owned()
     } else if total_lines <= viewport_height {
@@ -351,7 +607,7 @@ fn ui(
     };
 
     let heading_ctx = current_heading_context(&rendered.heading_lines, scroll_offset)
-        .map(|h| format!(" § {}", h.text))
+        .map(|h| format!(" {} {}", "\u{00A7}", h.text))
         .unwrap_or_default();
 
     let link_info = focused_link
@@ -359,13 +615,25 @@ fn ui(
         .map(|l| format!(" -> {}", l.url))
         .unwrap_or_default();
 
+    let search_info = search
+        .map(|s| {
+            if s.matches.is_empty() {
+                format!("  /{} [No matches]", s.query)
+            } else {
+                let current = s.current_match.map(|i| i + 1).unwrap_or(0);
+                format!("  /{} [{}/{}]", s.query, current, s.matches.len())
+            }
+        })
+        .unwrap_or_default();
+
     let status = format!(
-        " Line {}/{} — {}{}{}",
+        " Line {}/{} \u{2014} {}{}{}{}",
         scroll_offset + 1,
         total_lines,
         position,
         heading_ctx,
         link_info,
+        search_info,
     );
     let status_bar = Paragraph::new(Span::styled(
         status,
