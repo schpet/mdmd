@@ -10,22 +10,52 @@ use ratatui::{
 
 use crate::parse::{BlockKind, ContentBlock, ParsedDocument};
 
-/// Convert a parsed markdown document into styled [`Text`] ready for rendering.
+/// A heading's position in the rendered output.
+#[derive(Debug, Clone)]
+pub struct HeadingPosition {
+    /// 0-based line index in the rendered output.
+    pub rendered_line: usize,
+    /// Heading level (1–6).
+    pub level: u8,
+    /// Text content of the heading.
+    pub text: String,
+}
+
+/// The result of rendering a parsed document.
+pub struct RenderedDocument {
+    /// Styled text ready for display.
+    pub text: Text<'static>,
+    /// Positions of all headings in the rendered output.
+    pub heading_lines: Vec<HeadingPosition>,
+}
+
+/// Convert a parsed markdown document into styled [`Text`] ready for rendering,
+/// along with heading positions in the rendered output.
 ///
-/// The returned `Text` contains all blocks rendered with appropriate styling.
 /// The caller is responsible for clipping to the viewport height.
-pub fn render_document(doc: &ParsedDocument) -> Text<'static> {
+pub fn render_document(doc: &ParsedDocument) -> RenderedDocument {
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut heading_lines: Vec<HeadingPosition> = Vec::new();
 
     for (i, block) in doc.blocks.iter().enumerate() {
         if i > 0 {
             // Blank line between blocks
             lines.push(Line::default());
         }
+        if let BlockKind::Heading(level) = &block.kind {
+            heading_lines.push(HeadingPosition {
+                rendered_line: lines.len(),
+                level: *level,
+                text: block.content.clone(),
+            });
+        }
         render_block(block, &mut lines);
     }
 
-    Text::from(lines)
+    RenderedDocument {
+        text: Text::from(lines),
+        heading_lines,
+    }
 }
 
 fn render_block(block: &ContentBlock, lines: &mut Vec<Line<'static>>) {
@@ -148,19 +178,19 @@ mod tests {
     #[test]
     fn heading_levels_styled() {
         let doc = parse::parse("# H1\n\n## H2\n\n### H3\n");
-        let text = render_document(&doc);
+        let rendered = render_document(&doc);
         // Should produce lines for each heading plus blank separators
-        assert!(!text.lines.is_empty());
+        assert!(!rendered.text.lines.is_empty());
         // First line should be the H1
-        let first = &text.lines[0];
+        let first = &rendered.text.lines[0];
         assert!(first.to_string().contains("# H1"));
     }
 
     #[test]
     fn code_block_has_borders() {
         let doc = parse::parse("```\nhello\n```\n");
-        let text = render_document(&doc);
-        let joined: String = text.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let rendered = render_document(&doc);
+        let joined: String = rendered.text.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         assert!(joined.contains("┌"));
         assert!(joined.contains("hello"));
         assert!(joined.contains("└"));
@@ -169,8 +199,8 @@ mod tests {
     #[test]
     fn list_has_bullets() {
         let doc = parse::parse("- alpha\n- beta\n");
-        let text = render_document(&doc);
-        let joined: String = text.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let rendered = render_document(&doc);
+        let joined: String = rendered.text.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         assert!(joined.contains("•"));
         assert!(joined.contains("alpha"));
         assert!(joined.contains("beta"));
@@ -179,8 +209,8 @@ mod tests {
     #[test]
     fn block_quote_has_bar() {
         let doc = parse::parse("> quoted\n");
-        let text = render_document(&doc);
-        let joined: String = text.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let rendered = render_document(&doc);
+        let joined: String = rendered.text.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         assert!(joined.contains("▌"));
         assert!(joined.contains("quoted"));
     }
@@ -188,15 +218,34 @@ mod tests {
     #[test]
     fn thematic_break_renders() {
         let doc = parse::parse("above\n\n---\n\nbelow\n");
-        let text = render_document(&doc);
-        let joined: String = text.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let rendered = render_document(&doc);
+        let joined: String = rendered.text.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         assert!(joined.contains("────"));
     }
 
     #[test]
     fn empty_document_renders() {
         let doc = parse::parse("");
-        let text = render_document(&doc);
-        assert!(text.lines.is_empty());
+        let rendered = render_document(&doc);
+        assert!(rendered.text.lines.is_empty());
+        assert!(rendered.heading_lines.is_empty());
+    }
+
+    #[test]
+    fn heading_positions_tracked() {
+        let doc = parse::parse("# Title\n\nBody\n\n## Section\n");
+        let rendered = render_document(&doc);
+
+        assert_eq!(rendered.heading_lines.len(), 2);
+
+        // First heading at rendered line 0
+        assert_eq!(rendered.heading_lines[0].rendered_line, 0);
+        assert_eq!(rendered.heading_lines[0].level, 1);
+        assert_eq!(rendered.heading_lines[0].text, "Title");
+
+        // Second heading after: "# Title", blank, "Body", blank => line 4
+        assert_eq!(rendered.heading_lines[1].rendered_line, 4);
+        assert_eq!(rendered.heading_lines[1].level, 2);
+        assert_eq!(rendered.heading_lines[1].text, "Section");
     }
 }

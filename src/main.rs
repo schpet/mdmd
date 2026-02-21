@@ -7,12 +7,12 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Style},
-    text::{Span, Text},
+    text::Span,
     widgets::Paragraph,
     DefaultTerminal, Frame,
 };
 
-use parse::ParsedDocument;
+use render::{HeadingPosition, RenderedDocument};
 
 fn main() -> io::Result<()> {
     let path = match env::args().nth(1) {
@@ -31,13 +31,15 @@ fn main() -> io::Result<()> {
     ratatui::run(|terminal| run(terminal, &doc))
 }
 
-fn run(terminal: &mut DefaultTerminal, doc: &ParsedDocument) -> io::Result<()> {
-    let text = render::render_document(doc);
-    let total_lines = text.lines.len();
+fn run(terminal: &mut DefaultTerminal, doc: &parse::ParsedDocument) -> io::Result<()> {
+    let rendered = render::render_document(doc);
+    let total_lines = rendered.text.lines.len();
     let mut scroll_offset: usize = 0;
 
     loop {
-        terminal.draw(|frame| render(frame, &text, scroll_offset, total_lines))?;
+        terminal.draw(|frame| {
+            ui(frame, &rendered, scroll_offset, total_lines);
+        })?;
 
         if let Event::Key(key) = event::read()? {
             if key.kind != KeyEventKind::Press {
@@ -90,20 +92,56 @@ fn run(terminal: &mut DefaultTerminal, doc: &ParsedDocument) -> io::Result<()> {
                     scroll_offset = max_scroll;
                 }
 
+                // Next heading
+                KeyCode::Char('n') => {
+                    if let Some(pos) = rendered
+                        .heading_lines
+                        .iter()
+                        .find(|h| h.rendered_line > scroll_offset)
+                    {
+                        scroll_offset = pos.rendered_line.min(max_scroll);
+                    }
+                }
+
+                // Previous heading
+                KeyCode::Char('p') => {
+                    if let Some(pos) = rendered
+                        .heading_lines
+                        .iter()
+                        .rev()
+                        .find(|h| h.rendered_line < scroll_offset)
+                    {
+                        scroll_offset = pos.rendered_line.min(max_scroll);
+                    }
+                }
+
                 _ => {}
             }
         }
     }
 }
 
-fn render(frame: &mut Frame, text: &Text, scroll_offset: usize, total_lines: usize) {
+/// Find the heading context for the current scroll position.
+///
+/// Returns the most recent heading at or before `scroll_offset`.
+fn current_heading_context(
+    heading_lines: &[HeadingPosition],
+    scroll_offset: usize,
+) -> Option<&HeadingPosition> {
+    heading_lines
+        .iter()
+        .rev()
+        .find(|h| h.rendered_line <= scroll_offset)
+}
+
+fn ui(frame: &mut Frame, rendered: &RenderedDocument, scroll_offset: usize, total_lines: usize) {
     let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
 
     let viewport_height = chunks[0].height as usize;
 
     // Render scrolled content
-    let widget = Paragraph::new(text.clone()).scroll((scroll_offset as u16, 0));
+    let widget = Paragraph::new(rendered.text.clone()).scroll((scroll_offset as u16, 0));
     frame.render_widget(widget, chunks[0]);
 
     // Render status bar with scroll position indicator
@@ -120,7 +158,17 @@ fn render(frame: &mut Frame, text: &Text, scroll_offset: usize, total_lines: usi
         format!("{pct}%")
     };
 
-    let status = format!(" Line {}/{} — {}", scroll_offset + 1, total_lines, position);
+    let heading_ctx = current_heading_context(&rendered.heading_lines, scroll_offset)
+        .map(|h| format!(" § {}", h.text))
+        .unwrap_or_default();
+
+    let status = format!(
+        " Line {}/{} — {}{}",
+        scroll_offset + 1,
+        total_lines,
+        position,
+        heading_ctx,
+    );
     let status_bar = Paragraph::new(Span::styled(
         status,
         Style::default().fg(Color::Black).bg(Color::White),
