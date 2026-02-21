@@ -1,3 +1,5 @@
+mod parse;
+
 use std::io;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
