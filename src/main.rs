@@ -55,6 +55,80 @@ struct SearchState {
     saved_scroll: usize,
 }
 
+/// State for the help/shortcuts modal overlay.
+struct HelpState {
+    /// Current filter string for narrowing displayed shortcuts.
+    filter: String,
+    /// Scroll offset within the help modal content.
+    scroll_offset: usize,
+    /// Scroll offset saved when the help modal was opened (for restore on close).
+    saved_scroll: usize,
+}
+
+/// A single keyboard shortcut entry.
+struct ShortcutEntry {
+    key: &'static str,
+    description: &'static str,
+}
+
+/// A group of related shortcuts.
+struct ShortcutCategory {
+    name: &'static str,
+    entries: Vec<ShortcutEntry>,
+}
+
+/// Build the complete list of shortcut categories.
+fn shortcut_categories() -> Vec<ShortcutCategory> {
+    vec![
+        ShortcutCategory {
+            name: "Navigation",
+            entries: vec![
+                ShortcutEntry { key: "j / \u{2193}", description: "Scroll down one line" },
+                ShortcutEntry { key: "k / \u{2191}", description: "Scroll up one line" },
+                ShortcutEntry { key: "Ctrl-d / PgDn", description: "Scroll down half page" },
+                ShortcutEntry { key: "Ctrl-u / PgUp", description: "Scroll up half page" },
+                ShortcutEntry { key: "g / Home", description: "Jump to top" },
+                ShortcutEntry { key: "G / End", description: "Jump to bottom" },
+            ],
+        },
+        ShortcutCategory {
+            name: "Headings",
+            entries: vec![
+                ShortcutEntry { key: "n", description: "Next heading" },
+                ShortcutEntry { key: "p", description: "Previous heading" },
+                ShortcutEntry { key: "o", description: "Open outline" },
+            ],
+        },
+        ShortcutCategory {
+            name: "Search",
+            entries: vec![
+                ShortcutEntry { key: "/", description: "Start search" },
+                ShortcutEntry { key: "Ctrl-n", description: "Next search match" },
+                ShortcutEntry { key: "Ctrl-p", description: "Previous search match" },
+                ShortcutEntry { key: "Enter", description: "Confirm search" },
+                ShortcutEntry { key: "Esc", description: "Cancel search" },
+            ],
+        },
+        ShortcutCategory {
+            name: "Links",
+            entries: vec![
+                ShortcutEntry { key: "Tab", description: "Next link" },
+                ShortcutEntry { key: "Shift-Tab", description: "Previous link" },
+                ShortcutEntry { key: "Enter", description: "Follow focused link" },
+                ShortcutEntry { key: "Backspace", description: "Navigate back" },
+            ],
+        },
+        ShortcutCategory {
+            name: "General",
+            entries: vec![
+                ShortcutEntry { key: "?", description: "Toggle this help" },
+                ShortcutEntry { key: "q", description: "Quit" },
+                ShortcutEntry { key: "Esc", description: "Clear search or link focus" },
+            ],
+        },
+    ]
+}
+
 /// Saved navigation state for back-navigation when following links.
 struct NavigationEntry {
     file_path: PathBuf,
@@ -109,6 +183,7 @@ fn run(terminal: &mut DefaultTerminal, initial_path: &Path, initial_source: Stri
     let mut focused_link: Option<usize> = None;
     let mut outline: Option<OutlineState> = None;
     let mut search: Option<SearchState> = None;
+    let mut help: Option<HelpState> = None;
     let mut nav_stack: Vec<NavigationEntry> = Vec::new();
 
     loop {
@@ -121,6 +196,7 @@ fn run(terminal: &mut DefaultTerminal, initial_path: &Path, initial_source: Stri
                 focused_link,
                 outline.as_ref().map(|o| o.selected),
                 search.as_ref(),
+                help.as_ref(),
                 &current_path,
                 !nav_stack.is_empty(),
             );
@@ -134,7 +210,30 @@ fn run(terminal: &mut DefaultTerminal, initial_path: &Path, initial_source: Stri
             let viewport_height = terminal.size()?.height.saturating_sub(1) as usize;
             let max_scroll = total_lines.saturating_sub(viewport_height);
 
-            if let Some(ref mut ol) = outline {
+            if let Some(ref mut hl) = help {
+                // Help modal is open — handle help-specific keys
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('?') => {
+                        scroll_offset = hl.saved_scroll;
+                        help = None;
+                    }
+                    KeyCode::Backspace => {
+                        hl.filter.pop();
+                        hl.scroll_offset = 0;
+                    }
+                    KeyCode::Down => {
+                        hl.scroll_offset = hl.scroll_offset.saturating_add(1);
+                    }
+                    KeyCode::Up => {
+                        hl.scroll_offset = hl.scroll_offset.saturating_sub(1);
+                    }
+                    KeyCode::Char(c) => {
+                        hl.filter.push(c);
+                        hl.scroll_offset = 0;
+                    }
+                    _ => {}
+                }
+            } else if let Some(ref mut ol) = outline {
                 // Outline modal is open — handle outline-specific keys
                 let num_headings = rendered.heading_lines.len();
                 match key.code {
@@ -485,6 +584,16 @@ fn run(terminal: &mut DefaultTerminal, initial_path: &Path, initial_source: Stri
                         }
                     }
 
+                    // Open help modal
+                    KeyCode::Char('?') => {
+                        help = Some(HelpState {
+                            filter: String::new(),
+                            scroll_offset: 0,
+                            saved_scroll: scroll_offset,
+                        });
+                        focused_link = None;
+                    }
+
                     // Enter search mode
                     KeyCode::Char('/') => {
                         search = Some(SearchState {
@@ -647,6 +756,7 @@ fn ui(
     focused_link: Option<usize>,
     outline_selected: Option<usize>,
     search: Option<&SearchState>,
+    help: Option<&HelpState>,
     current_file: &Path,
     can_go_back: bool,
 ) {
@@ -709,6 +819,11 @@ fn ui(
     // Render outline modal overlay
     if let Some(selected) = outline_selected {
         render_outline(frame, &rendered.heading_lines, selected, chunks[0]);
+    }
+
+    // Render help modal overlay
+    if let Some(hl) = help {
+        render_help(frame, hl, chunks[0]);
     }
 
     // Render status bar or search input bar
@@ -867,4 +982,102 @@ fn render_outline(
             }
         }
     }
+}
+
+/// Render the help/shortcuts modal overlay with filterable shortcut list.
+fn render_help(frame: &mut Frame, help: &HelpState, viewport_area: Rect) {
+    let popup = centered_rect(60, 70, viewport_area);
+
+    // Clear the popup area
+    frame.render_widget(Clear, popup);
+
+    let categories = shortcut_categories();
+    let filter_lower = help.filter.to_lowercase();
+
+    // Build styled lines: filter input, then grouped shortcuts
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Filter input line
+    let filter_display = if help.filter.is_empty() {
+        " Type to filter...".to_owned()
+    } else {
+        format!(" {}\u{2502}", help.filter) // │ as cursor
+    };
+    lines.push(Line::from(Span::styled(
+        filter_display,
+        Style::default().fg(Color::Yellow),
+    )));
+    lines.push(Line::from("")); // blank separator
+
+    let mut any_match = false;
+    for cat in &categories {
+        // Filter entries in this category
+        let filtered: Vec<&ShortcutEntry> = cat
+            .entries
+            .iter()
+            .filter(|e| {
+                if filter_lower.is_empty() {
+                    return true;
+                }
+                e.key.to_lowercase().contains(&filter_lower)
+                    || e.description.to_lowercase().contains(&filter_lower)
+                    || cat.name.to_lowercase().contains(&filter_lower)
+            })
+            .collect();
+
+        if filtered.is_empty() {
+            continue;
+        }
+        any_match = true;
+
+        // Category header
+        lines.push(Line::from(Span::styled(
+            format!(" {}", cat.name),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+
+        // Shortcut entries
+        for entry in &filtered {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("   {:16}", entry.key),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    entry.description.to_owned(),
+                    Style::default().fg(Color::White),
+                ),
+            ]));
+        }
+
+        // Blank line after each category
+        lines.push(Line::from(""));
+    }
+
+    if !any_match && !filter_lower.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " No matching shortcuts",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    let title = if help.filter.is_empty() {
+        " Help \u{2014} ? to close "
+    } else {
+        " Help \u{2014} Esc to close "
+    };
+
+    let block = Block::bordered()
+        .title(title)
+        .style(Style::default().fg(Color::White));
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .scroll((help.scroll_offset as u16, 0));
+
+    frame.render_widget(paragraph, popup);
 }
