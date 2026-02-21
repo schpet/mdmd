@@ -202,13 +202,18 @@ fn run(terminal: &mut DefaultTerminal, initial_path: &Path, initial_source: Stri
             );
         })?;
 
-        if let Event::Key(key) = event::read()? {
+        let event = event::read()?;
+
+        // Recalculate bounds and clamp scroll offset on every event,
+        // including Event::Resize, so the view stays valid after terminal resize.
+        let viewport_height = terminal.size()?.height.saturating_sub(1) as usize;
+        let max_scroll = total_lines.saturating_sub(viewport_height);
+        scroll_offset = scroll_offset.min(max_scroll);
+
+        if let Event::Key(key) = event {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-
-            let viewport_height = terminal.size()?.height.saturating_sub(1) as usize;
-            let max_scroll = total_lines.saturating_sub(viewport_height);
 
             if let Some(ref mut hl) = help {
                 // Help modal is open — handle help-specific keys
@@ -760,8 +765,31 @@ fn ui(
     current_file: &Path,
     can_go_back: bool,
 ) {
+    let area = frame.area();
+
+    // Minimum usable terminal size: need width for content and height for viewport + status bar
+    const MIN_WIDTH: u16 = 20;
+    const MIN_HEIGHT: u16 = 5;
+    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+        let msg = "Terminal too small";
+        let msg_len = msg.len() as u16;
+        let x = area.x + area.width.saturating_sub(msg_len) / 2;
+        let y = area.y + area.height / 2;
+        let w = msg_len.min(area.width);
+        if w > 0 && area.height > 0 {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    msg,
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                )),
+                Rect::new(x, y, w, 1),
+            );
+        }
+        return;
+    }
+
     let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)])
-        .split(frame.area());
+        .split(area);
 
     let viewport_height = chunks[0].height as usize;
 
