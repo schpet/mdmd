@@ -3,12 +3,35 @@
 //! Converts a [`ParsedDocument`] into styled ratatui [`Text`] for display
 //! in the terminal viewport.
 
+use std::sync::OnceLock;
+
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
 };
+use syntect::{
+    highlighting::{Theme, ThemeSet},
+    parsing::SyntaxSet,
+};
 
 use crate::parse::{BlockKind, ContentBlock, InlineLink, ParsedDocument};
+
+fn syntax_set() -> &'static SyntaxSet {
+    static SS: OnceLock<SyntaxSet> = OnceLock::new();
+    SS.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+fn theme() -> &'static Theme {
+    static TH: OnceLock<Theme> = OnceLock::new();
+    TH.get_or_init(|| {
+        let ts = ThemeSet::load_defaults();
+        ts.themes["base16-eighties.dark"].clone()
+    })
+}
+
+fn syntect_to_ratatui_color(c: syntect::highlighting::Color) -> Color {
+    Color::Rgb(c.r, c.g, c.b)
+}
 
 /// A heading's position in the rendered output.
 #[derive(Debug, Clone)]
@@ -89,7 +112,9 @@ fn render_block(
         BlockKind::Paragraph => {
             render_paragraph(&block.content, &block.inline_links, lines, link_positions)
         }
-        BlockKind::CodeBlock => render_code_block(&block.content, lines),
+        BlockKind::CodeBlock(ref lang) => {
+            render_code_block(&block.content, lang.as_deref(), lines)
+        }
         BlockKind::List => {
             render_list(&block.content, &block.inline_links, lines, link_positions)
         }
@@ -255,17 +280,49 @@ fn render_paragraph(
     }
 }
 
-fn render_code_block(content: &str, lines: &mut Vec<Line<'static>>) {
+fn render_code_block(content: &str, lang: Option<&str>, lines: &mut Vec<Line<'static>>) {
     let border_style = Style::default().fg(Color::DarkGray);
-    let code_style = Style::default().fg(Color::Green).bg(Color::Black);
+    let fallback_style = Style::default().fg(Color::Green).bg(Color::Black);
+
+    let ss = syntax_set();
+    let syntax = lang
+        .and_then(|l| ss.find_syntax_by_token(l))
+        .or_else(|| lang.and_then(|l| ss.find_syntax_by_extension(l)));
 
     lines.push(Line::from(Span::styled("┌───", border_style)));
-    for text_line in content.lines() {
-        lines.push(Line::from(vec![
-            Span::styled("│ ", border_style),
-            Span::styled(text_line.to_owned(), code_style),
-        ]));
+
+    if let Some(syn) = syntax {
+        let th = theme();
+        let mut highlighter = syntect::easy::HighlightLines::new(syn, th);
+
+        for text_line in content.lines() {
+            let mut spans = vec![Span::styled("│ ", border_style)];
+
+            match highlighter.highlight_line(text_line, ss) {
+                Ok(regions) => {
+                    for (style, text) in regions {
+                        let fg = syntect_to_ratatui_color(style.foreground);
+                        let ratatui_style = Style::default().fg(fg).bg(Color::Black);
+                        spans.push(Span::styled(text.to_owned(), ratatui_style));
+                    }
+                }
+                Err(_) => {
+                    spans.push(Span::styled(text_line.to_owned(), fallback_style));
+                }
+            }
+
+            lines.push(Line::from(spans));
+        }
+    } else {
+        // No recognized syntax — plain monospace fallback
+        for text_line in content.lines() {
+            lines.push(Line::from(vec![
+                Span::styled("│ ", border_style),
+                Span::styled(text_line.to_owned(), fallback_style),
+            ]));
+        }
     }
+
     lines.push(Line::from(Span::styled("└───", border_style)));
 }
 

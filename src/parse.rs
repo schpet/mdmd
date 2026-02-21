@@ -5,7 +5,7 @@
 //! - A heading list with level, text, and line position
 //! - A collection of all links with text, URL, and position
 
-use pulldown_cmark::{Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -16,7 +16,7 @@ use pulldown_cmark::{Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd
 pub enum BlockKind {
     Paragraph,
     Heading(u8),
-    CodeBlock,
+    CodeBlock(Option<String>),
     List,
     BlockQuote,
     ThematicBreak,
@@ -168,7 +168,16 @@ fn tag_to_block_kind(tag: &Tag) -> Option<BlockKind> {
     match tag {
         Tag::Paragraph => Some(BlockKind::Paragraph),
         Tag::Heading { level, .. } => Some(BlockKind::Heading(heading_level_to_u8(level))),
-        Tag::CodeBlock(_) => Some(BlockKind::CodeBlock),
+        Tag::CodeBlock(kind) => {
+            let lang = match kind {
+                CodeBlockKind::Fenced(info) => {
+                    let s = info.split_whitespace().next().unwrap_or("").to_string();
+                    if s.is_empty() { None } else { Some(s) }
+                }
+                CodeBlockKind::Indented => None,
+            };
+            Some(BlockKind::CodeBlock(lang))
+        }
         Tag::BlockQuote(..) => Some(BlockKind::BlockQuote),
         Tag::List(_) => Some(BlockKind::List),
         Tag::Table(_) => Some(BlockKind::Table),
@@ -484,10 +493,11 @@ mod tests {
         let code: Vec<&ContentBlock> = doc
             .blocks
             .iter()
-            .filter(|b| b.kind == BlockKind::CodeBlock)
+            .filter(|b| matches!(b.kind, BlockKind::CodeBlock(_)))
             .collect();
         assert_eq!(code.len(), 1);
         assert_eq!(code[0].content, "hello world\n");
+        assert_eq!(code[0].kind, BlockKind::CodeBlock(None));
     }
 
     #[test]
@@ -498,10 +508,11 @@ mod tests {
         let code: Vec<&ContentBlock> = doc
             .blocks
             .iter()
-            .filter(|b| b.kind == BlockKind::CodeBlock)
+            .filter(|b| matches!(b.kind, BlockKind::CodeBlock(_)))
             .collect();
         assert_eq!(code.len(), 1);
         assert_eq!(code[0].content, "fn main() {}\n");
+        assert_eq!(code[0].kind, BlockKind::CodeBlock(Some("rust".to_string())));
     }
 
     #[test]
@@ -609,7 +620,7 @@ mdmd README.md
         assert!(kinds.contains(&&BlockKind::Heading(2)));
         assert!(kinds.contains(&&BlockKind::Paragraph));
         assert!(kinds.contains(&&BlockKind::List));
-        assert!(kinds.contains(&&BlockKind::CodeBlock));
+        assert!(kinds.iter().any(|k| matches!(k, BlockKind::CodeBlock(_))));
         assert!(kinds.contains(&&BlockKind::ThematicBreak));
         assert!(kinds.contains(&&BlockKind::BlockQuote));
     }
