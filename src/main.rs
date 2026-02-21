@@ -1,17 +1,36 @@
 mod parse;
+mod render;
 
-use std::io;
+use std::{env, fs, io, process};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use ratatui::{DefaultTerminal, Frame};
+use ratatui::{
+    widgets::Paragraph,
+    DefaultTerminal, Frame,
+};
+
+use parse::ParsedDocument;
 
 fn main() -> io::Result<()> {
-    ratatui::run(|terminal| run(terminal))
+    let path = match env::args().nth(1) {
+        Some(p) => p,
+        None => {
+            eprintln!("Usage: mdmd <file.md>");
+            process::exit(1);
+        }
+    };
+    let source = fs::read_to_string(&path).unwrap_or_else(|e| {
+        eprintln!("Error reading {path}: {e}");
+        process::exit(1);
+    });
+    let doc = parse::parse(&source);
+
+    ratatui::run(|terminal| run(terminal, &doc))
 }
 
-fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
+fn run(terminal: &mut DefaultTerminal, doc: &ParsedDocument) -> io::Result<()> {
     loop {
-        terminal.draw(render)?;
+        terminal.draw(|frame| render(frame, doc))?;
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') {
                 return Ok(());
@@ -20,6 +39,8 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
     }
 }
 
-fn render(frame: &mut Frame) {
-    frame.render_widget("mdmd - press q to quit", frame.area());
+fn render(frame: &mut Frame, doc: &ParsedDocument) {
+    let text = render::render_document(doc);
+    let widget = Paragraph::new(text);
+    frame.render_widget(widget, frame.area());
 }
