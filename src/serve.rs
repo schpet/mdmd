@@ -91,6 +91,8 @@ pub struct AppState {
     pub canonical_root: PathBuf,
     /// The primary markdown entry file.
     pub entry_file: PathBuf,
+    /// URL path for the primary entry file (percent-encoded, starts with `/`).
+    pub entry_url_path: String,
     /// Server configuration.
     pub config: AppConfig,
     /// Precomputed strong ETag for the embedded CSS asset (`/assets/mdmd.css`).
@@ -300,6 +302,58 @@ pub fn mime_for_ext(ext: &str) -> &'static str {
         "pdf" => "application/pdf",
         _ => "application/octet-stream",
     }
+}
+
+/// Percent-encode a single URL path segment (RFC 3986 §2.1 / §3.3).
+///
+/// Encodes all bytes that are not unreserved characters (ALPHA, DIGIT, `-`, `_`, `.`, `~`)
+/// per RFC 3986 §2.3.  Multi-byte UTF-8 characters are encoded byte-by-byte.
+pub fn percent_encode_segment(s: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(s.len() * 3);
+    for byte in s.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0xf) as usize] as char);
+        }
+    }
+    out
+}
+
+/// Derive the URL path for an entry file relative to the canonical root.
+///
+/// 1. Strips `canonical_root` prefix from `entry_file`.
+/// 2. Converts OS path separators to `/`.
+/// 3. Percent-encodes each path segment via [`percent_encode_segment`].
+/// 4. Prepends `/`.
+///
+/// Returns `Err(String)` if `entry_file` does not start with `canonical_root`.
+pub fn derive_entry_url_path(entry_file: &Path, canonical_root: &Path) -> Result<String, String> {
+    let relative = entry_file.strip_prefix(canonical_root).map_err(|_| {
+        format!(
+            "entry '{}' is outside serve root '{}'",
+            entry_file.display(),
+            canonical_root.display()
+        )
+    })?;
+
+    let mut url_path = String::from("/");
+    let mut first = true;
+    for component in relative.components() {
+        if let std::path::Component::Normal(name) = component {
+            if let Some(name_str) = name.to_str() {
+                if !first {
+                    url_path.push('/');
+                }
+                url_path.push_str(&percent_encode_segment(name_str));
+                first = false;
+            }
+        }
+    }
+    Ok(url_path)
 }
 
 /// Attempt to resolve a candidate path to an existing file using fallback rules.
@@ -717,12 +771,56 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
 /// to 100 times.  The server shuts down cleanly when SIGINT (Ctrl+C) is
 /// received.
 pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::Result<()> {
-    let entry_file = std::fs::canonicalize(&file).unwrap_or_else(|_| PathBuf::from(&file));
-    let serve_root = entry_file
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-    let canonical_root = std::fs::canonicalize(&serve_root).unwrap_or_else(|_| serve_root.clone());
+    // Use CWD as serve root so that sibling and parent directories remain
+    // accessible when the entry file is nested (e.g. `playground/README.md`).
+    let serve_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let canonical_root =
+        std::fs::canonicalize(&serve_root).unwrap_or_else(|_| serve_root.clone());
+
+    // Canonicalize the entry file path.
+    let raw_entry = PathBuf::from(&file);
+    let canonical_entry = std::fs::canonicalize(&raw_entry).map_err(|e| {
+        let msg = format!("entry '{}' not found: {}", file, e);
+        eprintln!("Error: {msg}");
+        io::Error::new(io::ErrorKind::NotFound, msg)
+    })?;
+
+    // If the entry resolves to a directory, apply the README.md / index.md fallback.
+    let entry_file = if canonical_entry.is_dir() {
+        let readme = canonical_entry.join("README.md");
+        let index_md = canonical_entry.join("index.md");
+        if readme.is_file() {
+            readme
+        } else if index_md.is_file() {
+            index_md
+        } else {
+            let msg = format!(
+                "no README.md or index.md found in directory '{}'",
+                canonical_entry.display()
+            );
+            eprintln!("Error: {msg}");
+            return Err(io::Error::new(io::ErrorKind::NotFound, msg));
+        }
+    } else {
+        canonical_entry
+    };
+
+    // Reject entry files that lie outside the serve root.
+    if !entry_file.starts_with(&canonical_root) {
+        let msg = format!(
+            "entry '{}' is outside serve root '{}'; run mdmd from the document root directory",
+            entry_file.display(),
+            canonical_root.display()
+        );
+        eprintln!("Error: {msg}");
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, msg));
+    }
+
+    // Compute the URL path for the entry file (used in the startup banner and by handlers).
+    let entry_url_path = derive_entry_url_path(&entry_file, &canonical_root).map_err(|msg| {
+        eprintln!("Error: {msg}");
+        io::Error::new(io::ErrorKind::InvalidInput, msg)
+    })?;
 
     // Precompute ETags for embedded static assets (stable for the lifetime of
     // this server process — embedded bytes never change at runtime).
@@ -741,6 +839,7 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
         serve_root,
         canonical_root,
         entry_file,
+        entry_url_path,
         config: AppConfig,
         css_etag,
         js_etag,
@@ -769,16 +868,18 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
     println!("mdmd serve");
     println!("root:  {}", state.canonical_root.display());
     println!("entry: {}", state.entry_file.display());
-    // Always print localhost URL.
-    println!("url:   http://127.0.0.1:{bound_port}");
+    // Always print localhost entry URL (with path) and root index URL.
+    println!("url:   http://127.0.0.1:{bound_port}{}", state.entry_url_path);
+    println!("index: http://127.0.0.1:{bound_port}/");
 
-    // Conditionally print Tailscale URL when available.
+    // Conditionally print Tailscale URLs when available.
     let tailscale_host = tokio::task::spawn_blocking(tailscale_dns_name)
         .await
         .ok()
         .flatten();
     if let Some(ref host) = tailscale_host {
-        println!("url:   http://{host}:{bound_port}");
+        println!("url:   http://{host}:{bound_port}{}", state.entry_url_path);
+        println!("index: http://{host}:{bound_port}/");
     }
 
     axum::serve(listener, app)
@@ -801,6 +902,104 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- percent_encode_segment ---
+
+    #[test]
+    fn encode_unreserved_chars_pass_through() {
+        assert_eq!(percent_encode_segment("README.md"), "README.md");
+        assert_eq!(percent_encode_segment("guide"), "guide");
+        assert_eq!(percent_encode_segment("a-b_c.d~e"), "a-b_c.d~e");
+        assert_eq!(percent_encode_segment("ABC123"), "ABC123");
+    }
+
+    #[test]
+    fn encode_space_as_percent20() {
+        assert_eq!(percent_encode_segment("my file.md"), "my%20file.md");
+        assert_eq!(percent_encode_segment("hello world"), "hello%20world");
+    }
+
+    #[test]
+    fn encode_multibyte_unicode() {
+        // "é" is U+00E9 → UTF-8: 0xC3 0xA9
+        assert_eq!(percent_encode_segment("café"), "caf%C3%A9");
+        // ☺ is U+263A → UTF-8: 0xE2 0x98 0xBA
+        assert_eq!(percent_encode_segment("☺"), "%E2%98%BA");
+    }
+
+    #[test]
+    fn encode_reserved_url_chars() {
+        assert_eq!(percent_encode_segment("a/b"), "a%2Fb");
+        assert_eq!(percent_encode_segment("a#b"), "a%23b");
+        assert_eq!(percent_encode_segment("a?b"), "a%3Fb");
+        assert_eq!(percent_encode_segment("a%b"), "a%25b");
+    }
+
+    // --- derive_entry_url_path ---
+
+    #[test]
+    fn url_path_simple_nested() {
+        let root = PathBuf::from("/home/user/docs");
+        let entry = PathBuf::from("/home/user/docs/playground/README.md");
+        assert_eq!(
+            derive_entry_url_path(&entry, &root).unwrap(),
+            "/playground/README.md"
+        );
+    }
+
+    #[test]
+    fn url_path_top_level_file() {
+        let root = PathBuf::from("/home/user/docs");
+        let entry = PathBuf::from("/home/user/docs/README.md");
+        assert_eq!(
+            derive_entry_url_path(&entry, &root).unwrap(),
+            "/README.md"
+        );
+    }
+
+    #[test]
+    fn url_path_entry_equals_root() {
+        let root = PathBuf::from("/home/user/docs");
+        let entry = PathBuf::from("/home/user/docs");
+        assert_eq!(derive_entry_url_path(&entry, &root).unwrap(), "/");
+    }
+
+    #[test]
+    fn url_path_deeply_nested() {
+        let root = PathBuf::from("/repo");
+        let entry = PathBuf::from("/repo/a/b/c/page.md");
+        assert_eq!(
+            derive_entry_url_path(&entry, &root).unwrap(),
+            "/a/b/c/page.md"
+        );
+    }
+
+    #[test]
+    fn url_path_with_spaces() {
+        let root = PathBuf::from("/home/user/docs");
+        let entry = PathBuf::from("/home/user/docs/my docs/guide.md");
+        assert_eq!(
+            derive_entry_url_path(&entry, &root).unwrap(),
+            "/my%20docs/guide.md"
+        );
+    }
+
+    #[test]
+    fn url_path_with_unicode_segment() {
+        let root = PathBuf::from("/home/user/docs");
+        let entry = PathBuf::from("/home/user/docs/café/guide.md");
+        assert_eq!(
+            derive_entry_url_path(&entry, &root).unwrap(),
+            "/caf%C3%A9/guide.md"
+        );
+    }
+
+    #[test]
+    fn url_path_outside_root_is_err() {
+        let root = PathBuf::from("/home/user/docs");
+        let entry = PathBuf::from("/tmp/other/README.md");
+        assert!(derive_entry_url_path(&entry, &root).is_err());
+    }
 
     // --- parse_tailscale_dns_name ---
 

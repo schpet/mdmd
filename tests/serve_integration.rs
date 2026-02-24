@@ -128,6 +128,7 @@ impl ServerHandle {
             .arg("--port")
             .arg(port.to_string())
             .arg(&fixture.entry)
+            .current_dir(&fixture.root)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
