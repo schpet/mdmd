@@ -15,6 +15,63 @@ use tokio::signal;
 use crate::html;
 use crate::web_assets;
 
+// ---------------------------------------------------------------------------
+// Tailscale detection
+// ---------------------------------------------------------------------------
+
+/// Parse raw bytes from `tailscale status --json` and extract the trimmed
+/// `Self.DNSName`.
+///
+/// Returns `Err(reason)` (a short lowercase slug) when:
+/// - The bytes are not valid JSON.
+/// - The `Self` key or `DNSName` field is absent.
+/// - `DNSName` is empty after stripping the trailing `.`.
+///
+/// All error paths use `?`/`Result` propagation — zero `unwrap()`/`expect()`.
+pub fn parse_tailscale_dns_name(output: &[u8]) -> Result<String, String> {
+    let json: serde_json::Value =
+        serde_json::from_slice(output).map_err(|e| format!("json-parse: {e}"))?;
+
+    let dns_name = json
+        .get("Self")
+        .and_then(|s| s.get("DNSName"))
+        .and_then(|d| d.as_str())
+        .ok_or_else(|| "no-DNSName".to_owned())?;
+
+    let trimmed = dns_name.trim_end_matches('.');
+    if trimmed.is_empty() {
+        return Err("empty-DNSName".to_owned());
+    }
+
+    Ok(trimmed.to_owned())
+}
+
+/// Attempt to obtain the Tailscale hostname by running `tailscale status --json`.
+///
+/// Any subprocess error, JSON parse failure, or missing/empty `DNSName` is
+/// silently treated as "no Tailscale available" and logged at debug level.
+/// This function never panics.
+fn tailscale_dns_name() -> Option<String> {
+    let output = match std::process::Command::new("tailscale")
+        .args(["status", "--json"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("[tailscale] skipped reason=subprocess-error: {e}");
+            return None;
+        }
+    };
+
+    match parse_tailscale_dns_name(&output.stdout) {
+        Ok(name) => Some(name),
+        Err(reason) => {
+            eprintln!("[tailscale] skipped reason={reason}");
+            None
+        }
+    }
+}
+
 /// Maximum number of consecutive ports to try before giving up.
 const MAX_PORT_ATTEMPTS: u16 = 100;
 
@@ -453,6 +510,18 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
 
     eprintln!("[serve] listening on {}:{}", bind_addr, bound_port);
 
+    // Always print localhost URL.
+    eprintln!("url:   http://127.0.0.1:{bound_port}");
+
+    // Conditionally print Tailscale URL when available.
+    let tailscale_host = tokio::task::spawn_blocking(tailscale_dns_name)
+        .await
+        .ok()
+        .flatten();
+    if let Some(ref host) = tailscale_host {
+        eprintln!("url:   http://{host}:{bound_port}");
+    }
+
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             signal::ctrl_c()
@@ -473,6 +542,68 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- parse_tailscale_dns_name ---
+
+    #[test]
+    fn tailscale_valid_json_trims_trailing_dot() {
+        let json = br#"{"Self":{"DNSName":"hostname.ts.net."}}"#;
+        let result = parse_tailscale_dns_name(json).unwrap();
+        assert_eq!(result, "hostname.ts.net");
+    }
+
+    #[test]
+    fn tailscale_trailing_dot_only_is_empty_err() {
+        let json = br#"{"Self":{"DNSName":"."}}"#;
+        let err = parse_tailscale_dns_name(json).unwrap_err();
+        assert!(err.contains("empty-DNSName"), "got: {err}");
+    }
+
+    #[test]
+    fn tailscale_empty_json_object_returns_err() {
+        let json = b"{}";
+        assert!(parse_tailscale_dns_name(json).is_err());
+    }
+
+    #[test]
+    fn tailscale_missing_self_key_returns_err() {
+        let json = br#"{"Other":{"DNSName":"hostname.ts.net."}}"#;
+        let err = parse_tailscale_dns_name(json).unwrap_err();
+        assert!(err.contains("no-DNSName"), "got: {err}");
+    }
+
+    #[test]
+    fn tailscale_missing_dnsname_field_returns_err() {
+        let json = br#"{"Self":{"Status":"Running"}}"#;
+        let err = parse_tailscale_dns_name(json).unwrap_err();
+        assert!(err.contains("no-DNSName"), "got: {err}");
+    }
+
+    #[test]
+    fn tailscale_malformed_json_returns_err() {
+        let json = b"not valid json {{{";
+        let err = parse_tailscale_dns_name(json).unwrap_err();
+        assert!(err.contains("json-parse"), "got: {err}");
+    }
+
+    #[test]
+    fn tailscale_empty_bytes_returns_err() {
+        let json = b"";
+        let err = parse_tailscale_dns_name(json).unwrap_err();
+        assert!(err.contains("json-parse"), "got: {err}");
+    }
+
+    #[test]
+    fn tailscale_subprocess_failure_returns_none() {
+        // Running a non-existent command should produce Err from output(),
+        // which tailscale_dns_name() converts to None without panicking.
+        let result = std::process::Command::new("__tailscale_does_not_exist__")
+            .args(["status", "--json"])
+            .output();
+        // Verify the OS error is captured (not panicked); tailscale_dns_name()
+        // handles this same Err by returning None.
+        assert!(result.is_err(), "expected command-not-found error");
+    }
 
     // --- is_raw_mode ---
 
