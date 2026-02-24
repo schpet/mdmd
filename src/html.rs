@@ -6,7 +6,7 @@
 //! The TUI parse/render path (`parse.rs`, `render.rs`) is not touched here.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use comrak::{
     arena_tree::NodeEdge,
@@ -146,6 +146,124 @@ fn build_toc_html(headings: &[HeadingEntry]) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Local link rewriting (bd-1p6)
+// ---------------------------------------------------------------------------
+
+/// Split a URL into its base path and trailing suffix (query string and/or fragment).
+///
+/// The suffix starts at the first `?` or `#` character (whichever comes first).
+/// Returns `(base, suffix)` where `suffix` may be empty.
+fn split_url_suffix(url: &str) -> (&str, &str) {
+    match url.find(|c| c == '?' || c == '#') {
+        Some(pos) => (&url[..pos], &url[pos..]),
+        None => (url, ""),
+    }
+}
+
+/// Resolve a relative URL path against `file_dir`, producing an absolute `PathBuf`.
+///
+/// Processes each `/`-separated component of `rel`:
+/// - `""` and `"."` are ignored.
+/// - `".."` pops the last component (clamped at root; will not go above filesystem root).
+/// - All other components are pushed.
+fn resolve_relative_path(file_dir: &Path, rel: &str) -> PathBuf {
+    let mut resolved = file_dir.to_path_buf();
+    for component in rel.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                // pop() returns false at filesystem root — path stays clamped.
+                resolved.pop();
+            }
+            part => resolved.push(part),
+        }
+    }
+    resolved
+}
+
+/// Rewrite a single link URL to a root-relative href suitable for web navigation.
+///
+/// # Returns
+/// - `None`: the URL is external, absolute, fragment-only, or cannot be made
+///   root-relative (resolved path escapes `serve_root`). Leave as-is.
+/// - `Some(new_url)`: the rewritten root-relative URL (e.g. `/docs/page.md`),
+///   with any original query string and fragment preserved.
+fn rewrite_url(url: &str, file_dir: &Path, serve_root: &Path) -> Option<String> {
+    // Never rewrite external, protocol-relative, absolute, or fragment-only URLs.
+    if url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("//")
+        || url.starts_with("mailto:")
+        || url.starts_with('#')
+        || url.starts_with('/')
+    {
+        return None;
+    }
+
+    // Separate the base path from any query string / fragment suffix.
+    let (base, suffix) = split_url_suffix(url);
+
+    // If the base is empty (e.g. url is "?q=1" without a path), leave as-is.
+    if base.is_empty() {
+        return None;
+    }
+
+    // Resolve the relative base path from the current file's directory.
+    let resolved = resolve_relative_path(file_dir, base);
+
+    // Make root-relative by stripping the serve_root prefix.
+    // If strip_prefix fails the resolved path escaped serve_root; leave url unchanged
+    // so the server's path resolver will reject it with 404 at request time.
+    match resolved.strip_prefix(serve_root) {
+        Ok(rel) => {
+            let rel_str = rel.to_string_lossy();
+            Some(format!("/{}{}", rel_str, suffix))
+        }
+        Err(_) => None,
+    }
+}
+
+/// Traverse the comrak AST and rewrite local relative link (and image) URLs to
+/// root-relative hrefs suitable for web navigation.
+///
+/// Mutates matching `NodeValue::Link` and `NodeValue::Image` nodes in-place.
+/// Links inside fenced code blocks are not visited (they are `NodeValue::Code`
+/// or `NodeValue::CodeBlock`, not `Link` nodes, so they are naturally skipped).
+///
+/// # Returns
+/// `(rewritten, skipped)` — counts of links rewritten and left unchanged.
+fn rewrite_local_links<'a>(
+    root: &'a AstNode<'a>,
+    file_path: &Path,
+    serve_root: &Path,
+) -> (usize, usize) {
+    let file_dir = file_path.parent().unwrap_or(Path::new(""));
+    let mut rewritten = 0usize;
+    let mut skipped = 0usize;
+
+    for node in root.descendants() {
+        let mut data = node.data.borrow_mut();
+        let url = match &mut data.value {
+            NodeValue::Link(nl) => &mut nl.url,
+            NodeValue::Image(ni) => &mut ni.url,
+            _ => continue,
+        };
+
+        match rewrite_url(url, file_dir, serve_root) {
+            Some(new_url) => {
+                *url = new_url;
+                rewritten += 1;
+            }
+            None => {
+                skipped += 1;
+            }
+        }
+    }
+
+    (rewritten, skipped)
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -153,23 +271,34 @@ fn build_toc_html(headings: &[HeadingEntry]) -> String {
 ///
 /// # Parameters
 /// - `input`: raw markdown source.
-/// - `file_path`: path of the source file. Used for logging; also available to
-///   the link-rewriting pass in bd-1p6 during the same traversal.
-/// - `serve_root`: root directory of the serve tree. Available to bd-1p6.
+/// - `file_path`: absolute path of the source file (used for link rewriting
+///   and logging).
+/// - `serve_root`: canonicalized root directory of the serve tree. Local
+///   relative links are rewritten to root-relative hrefs using this value.
 ///
 /// # Returns
 /// `(html, headings)` where `html` is the full HTML string and `headings` is
 /// the ordered list of [`HeadingEntry`] values for TOC construction.
 ///
-/// Logs `[render] path=<file> headings=<count>` at info level.
+/// Logs `[render] path=<file> headings=<count>` and
+/// `[rewrite] file=<path> rewritten=<N> skipped=<M>` at info/debug level.
 pub fn render_markdown(
     input: &str,
     file_path: &Path,
-    _serve_root: &Path,
+    serve_root: &Path,
 ) -> (String, Vec<HeadingEntry>) {
     let arena = Arena::new();
     let options = make_options();
     let root = parse_document(&arena, input, &options);
+
+    // --- Rewrite local relative links to root-relative hrefs (bd-1p6) ---
+    let (rewritten, skipped) = rewrite_local_links(root, file_path, serve_root);
+    eprintln!(
+        "[rewrite] file={} rewritten={} skipped={}",
+        file_path.display(),
+        rewritten,
+        skipped
+    );
 
     // --- Extract headings with per-document slug deduplication (R4) ---
     let mut entries: Vec<HeadingEntry> = Vec::new();
@@ -531,5 +660,185 @@ mod tests {
         assert_eq!(headings[1].text, "H2");
         assert_eq!(headings[2].level, 3);
         assert_eq!(headings[2].text, "H3");
+    }
+
+    // --- bd-1p6: local link rewriting ---
+
+    /// Convenience wrapper: render with absolute paths.
+    ///
+    /// `serve_root` is the absolute serve root; `file_rel` is the relative path
+    /// of the file within that root (e.g. `"index.md"` or `"docs/subdir/page.md"`).
+    fn render_abs(input: &str, serve_root: &str, file_rel: &str) -> String {
+        let root = Path::new(serve_root);
+        let file = root.join(file_rel);
+        let (html, _) = render_markdown(input, &file, root);
+        html
+    }
+
+    #[test]
+    fn rewrite_md_link_from_root_file() {
+        // [t](other.md) from root-level file → /other.md
+        let html = render_abs("[t](other.md)\n", "/root", "index.md");
+        assert!(
+            html.contains("href=\"/other.md\""),
+            "expected /other.md, got: {html}"
+        );
+    }
+
+    #[test]
+    fn rewrite_subdir_link_from_root_file() {
+        // [t](subdir/page.md) from root-level file → /subdir/page.md
+        let html = render_abs("[t](subdir/page.md)\n", "/root", "index.md");
+        assert!(
+            html.contains("href=\"/subdir/page.md\""),
+            "expected /subdir/page.md, got: {html}"
+        );
+    }
+
+    #[test]
+    fn rewrite_dotdot_link_from_nested_file() {
+        // [t](../parent.md) from docs/subdir/page.md → /docs/parent.md
+        let html = render_abs("[t](../parent.md)\n", "/root", "docs/subdir/page.md");
+        assert!(
+            html.contains("href=\"/docs/parent.md\""),
+            "expected /docs/parent.md, got: {html}"
+        );
+    }
+
+    #[test]
+    fn rewrite_extensionless_link_from_root_file() {
+        // [t](subdir/doc) extensionless → /subdir/doc (resolver will add .md)
+        let html = render_abs("[t](subdir/doc)\n", "/root", "index.md");
+        assert!(
+            html.contains("href=\"/subdir/doc\""),
+            "expected /subdir/doc, got: {html}"
+        );
+    }
+
+    #[test]
+    fn external_link_unchanged() {
+        // [t](https://example.com/page.md) → href unchanged
+        let html = render_abs("[t](https://example.com/page.md)\n", "/root", "index.md");
+        assert!(
+            html.contains("href=\"https://example.com/page.md\""),
+            "external href must be unchanged, got: {html}"
+        );
+    }
+
+    #[test]
+    fn fragment_only_link_unchanged() {
+        // [t](#section) → href unchanged
+        let html = render_abs("[t](#section)\n", "/root", "index.md");
+        assert!(
+            html.contains("href=\"#section\""),
+            "fragment-only href must be unchanged, got: {html}"
+        );
+    }
+
+    #[test]
+    fn rewrite_preserves_fragment_and_query() {
+        // [t](doc.md#section?query=1) → /doc.md#section?query=1
+        let html = render_abs("[t](doc.md#section?query=1)\n", "/root", "index.md");
+        assert!(
+            html.contains("href=\"/doc.md#section?query=1\""),
+            "fragment+query must be preserved, got: {html}"
+        );
+    }
+
+    #[test]
+    fn rewrite_traversal_escaping_serve_root_left_as_is() {
+        // [t](../../outside.md) from docs/subdir/page.md
+        // Resolved path escapes /root → leave URL as-is (server will 404).
+        let html = render_abs("[t](../../outside.md)\n", "/root", "docs/subdir/page.md");
+        // The URL must not contain an href pointing above the root.
+        // It is left unchanged as "../../outside.md" or rewritten to something safe.
+        // Either way, it must NOT produce an absolute path outside /root.
+        assert!(
+            !html.contains("href=\"/../../outside.md\"")
+                && !html.contains("href=\"/../outside.md\""),
+            "rewritten href must not escape serve_root, got: {html}"
+        );
+    }
+
+    #[test]
+    fn link_in_fenced_code_block_not_rewritten() {
+        // Links inside fenced code blocks are plain text, not AST Link nodes.
+        let input = "```\n[t](other.md)\n```\n";
+        let html = render_abs(input, "/root", "index.md");
+        // The URL should appear as literal text in a <code> block, not as an href.
+        assert!(
+            !html.contains("href=\"/other.md\""),
+            "link in code block must NOT be rewritten as an href, got: {html}"
+        );
+        assert!(
+            html.contains("other.md"),
+            "link text should still appear in code block, got: {html}"
+        );
+    }
+
+    // --- rewrite_url unit tests ---
+
+    #[test]
+    fn rewrite_url_skips_https() {
+        assert!(rewrite_url("https://example.com", Path::new("/r"), Path::new("/r")).is_none());
+    }
+
+    #[test]
+    fn rewrite_url_skips_http() {
+        assert!(rewrite_url("http://example.com", Path::new("/r"), Path::new("/r")).is_none());
+    }
+
+    #[test]
+    fn rewrite_url_skips_protocol_relative() {
+        assert!(rewrite_url("//example.com/path", Path::new("/r"), Path::new("/r")).is_none());
+    }
+
+    #[test]
+    fn rewrite_url_skips_mailto() {
+        assert!(rewrite_url("mailto:user@example.com", Path::new("/r"), Path::new("/r")).is_none());
+    }
+
+    #[test]
+    fn rewrite_url_skips_fragment() {
+        assert!(rewrite_url("#anchor", Path::new("/r"), Path::new("/r")).is_none());
+    }
+
+    #[test]
+    fn rewrite_url_skips_absolute_path() {
+        assert!(rewrite_url("/already/absolute", Path::new("/r"), Path::new("/r")).is_none());
+    }
+
+    #[test]
+    fn rewrite_url_local_md_link() {
+        let result = rewrite_url("page.md", Path::new("/root"), Path::new("/root"));
+        assert_eq!(result, Some("/page.md".to_owned()));
+    }
+
+    #[test]
+    fn rewrite_url_preserves_fragment() {
+        let result = rewrite_url("page.md#section", Path::new("/root"), Path::new("/root"));
+        assert_eq!(result, Some("/page.md#section".to_owned()));
+    }
+
+    #[test]
+    fn rewrite_url_preserves_query() {
+        let result = rewrite_url("page.md?q=1", Path::new("/root"), Path::new("/root"));
+        assert_eq!(result, Some("/page.md?q=1".to_owned()));
+    }
+
+    #[test]
+    fn rewrite_url_dotdot_within_root() {
+        // ../parent.md from /root/subdir → resolves to /root/parent.md → /parent.md
+        let result =
+            rewrite_url("../parent.md", Path::new("/root/subdir"), Path::new("/root"));
+        assert_eq!(result, Some("/parent.md".to_owned()));
+    }
+
+    #[test]
+    fn rewrite_url_dotdot_escaping_root_returns_none() {
+        // ../../outside.md from /root/sub → resolves above /root → None
+        let result =
+            rewrite_url("../../outside.md", Path::new("/root/sub"), Path::new("/root"));
+        assert!(result.is_none(), "path escaping root must return None");
     }
 }

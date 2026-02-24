@@ -1001,6 +1001,7 @@ dependencies = [
  "crossterm",
  "pulldown-cmark",
  "ratatui",
+ "serde_json",
  "syntect",
  "tokio",
 ]
