@@ -4,7 +4,11 @@ mod render;
 mod serve;
 mod web_assets;
 
-use std::{fs, io, path::{Path, PathBuf}, process};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+    process,
+};
 
 use clap::{Parser, Subcommand};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -80,9 +84,17 @@ struct LegacyCli {
 
 /// Resolved dispatch mode after CLI argument parsing.
 enum DispatchMode {
-    Legacy { file: String },
-    View { file: String },
-    Serve { file: String, bind: String, port: u16 },
+    Legacy {
+        file: String,
+    },
+    View {
+        file: String,
+    },
+    Serve {
+        file: String,
+        bind: String,
+        port: u16,
+    },
 }
 
 /// State for vim-like `/` search.
@@ -127,47 +139,110 @@ fn shortcut_categories() -> Vec<ShortcutCategory> {
         ShortcutCategory {
             name: "Navigation",
             entries: vec![
-                ShortcutEntry { key: "j / \u{2193}", description: "Scroll down one line" },
-                ShortcutEntry { key: "k / \u{2191}", description: "Scroll up one line" },
-                ShortcutEntry { key: "Ctrl-d / PgDn", description: "Scroll down half page" },
-                ShortcutEntry { key: "Ctrl-u / PgUp", description: "Scroll up half page" },
-                ShortcutEntry { key: "g / Home", description: "Jump to top" },
-                ShortcutEntry { key: "G / End", description: "Jump to bottom" },
+                ShortcutEntry {
+                    key: "j / \u{2193}",
+                    description: "Scroll down one line",
+                },
+                ShortcutEntry {
+                    key: "k / \u{2191}",
+                    description: "Scroll up one line",
+                },
+                ShortcutEntry {
+                    key: "Ctrl-d / PgDn",
+                    description: "Scroll down half page",
+                },
+                ShortcutEntry {
+                    key: "Ctrl-u / PgUp",
+                    description: "Scroll up half page",
+                },
+                ShortcutEntry {
+                    key: "g / Home",
+                    description: "Jump to top",
+                },
+                ShortcutEntry {
+                    key: "G / End",
+                    description: "Jump to bottom",
+                },
             ],
         },
         ShortcutCategory {
             name: "Headings",
             entries: vec![
-                ShortcutEntry { key: "n", description: "Next heading" },
-                ShortcutEntry { key: "p", description: "Previous heading" },
-                ShortcutEntry { key: "o", description: "Open outline" },
+                ShortcutEntry {
+                    key: "n",
+                    description: "Next heading",
+                },
+                ShortcutEntry {
+                    key: "p",
+                    description: "Previous heading",
+                },
+                ShortcutEntry {
+                    key: "o",
+                    description: "Open outline",
+                },
             ],
         },
         ShortcutCategory {
             name: "Search",
             entries: vec![
-                ShortcutEntry { key: "/", description: "Start search" },
-                ShortcutEntry { key: "Ctrl-n", description: "Next search match" },
-                ShortcutEntry { key: "Ctrl-p", description: "Previous search match" },
-                ShortcutEntry { key: "Enter", description: "Confirm search" },
-                ShortcutEntry { key: "Esc", description: "Cancel search" },
+                ShortcutEntry {
+                    key: "/",
+                    description: "Start search",
+                },
+                ShortcutEntry {
+                    key: "Ctrl-n",
+                    description: "Next search match",
+                },
+                ShortcutEntry {
+                    key: "Ctrl-p",
+                    description: "Previous search match",
+                },
+                ShortcutEntry {
+                    key: "Enter",
+                    description: "Confirm search",
+                },
+                ShortcutEntry {
+                    key: "Esc",
+                    description: "Cancel search",
+                },
             ],
         },
         ShortcutCategory {
             name: "Links",
             entries: vec![
-                ShortcutEntry { key: "Tab", description: "Next link" },
-                ShortcutEntry { key: "Shift-Tab", description: "Previous link" },
-                ShortcutEntry { key: "Enter", description: "Follow focused link" },
-                ShortcutEntry { key: "Backspace", description: "Navigate back" },
+                ShortcutEntry {
+                    key: "Tab",
+                    description: "Next link",
+                },
+                ShortcutEntry {
+                    key: "Shift-Tab",
+                    description: "Previous link",
+                },
+                ShortcutEntry {
+                    key: "Enter",
+                    description: "Follow focused link",
+                },
+                ShortcutEntry {
+                    key: "Backspace",
+                    description: "Navigate back",
+                },
             ],
         },
         ShortcutCategory {
             name: "General",
             entries: vec![
-                ShortcutEntry { key: "?", description: "Toggle this help" },
-                ShortcutEntry { key: "q", description: "Quit" },
-                ShortcutEntry { key: "Esc", description: "Clear search or link focus" },
+                ShortcutEntry {
+                    key: "?",
+                    description: "Toggle this help",
+                },
+                ShortcutEntry {
+                    key: "q",
+                    description: "Quit",
+                },
+                ShortcutEntry {
+                    key: "Esc",
+                    description: "Clear search or link focus",
+                },
             ],
         },
     ]
@@ -261,7 +336,11 @@ fn run_tui_file(file_arg: &str) -> io::Result<()> {
     ratatui::run(|terminal| run(terminal, &canonical, source))
 }
 
-fn run(terminal: &mut DefaultTerminal, initial_path: &Path, initial_source: String) -> io::Result<()> {
+fn run(
+    terminal: &mut DefaultTerminal,
+    initial_path: &Path,
+    initial_source: String,
+) -> io::Result<()> {
     let mut current_path = initial_path.to_path_buf();
     let doc = parse::parse(&initial_source);
     let mut rendered = render::render_document(&doc);
@@ -394,14 +473,10 @@ fn run(terminal: &mut DefaultTerminal, initial_path: &Path, initial_source: Stri
                             s.current_match = nearest_match_from(&s.matches, s.saved_scroll);
                         }
                     }
-                    KeyCode::Char('n')
-                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
+                    KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         advance_search_match(&mut search, true);
                     }
-                    KeyCode::Char('p')
-                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
+                    KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         advance_search_match(&mut search, false);
                     }
                     KeyCode::Char(c) => {
@@ -460,9 +535,7 @@ fn run(terminal: &mut DefaultTerminal, initial_path: &Path, initial_source: Stri
                     }
 
                     // Half page down
-                    KeyCode::Char('d')
-                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let half = viewport_height / 2;
                         scroll_offset = (scroll_offset + half).min(max_scroll);
                         focused_link = None;
@@ -474,9 +547,7 @@ fn run(terminal: &mut DefaultTerminal, initial_path: &Path, initial_source: Stri
                     }
 
                     // Half page up
-                    KeyCode::Char('u')
-                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let half = viewport_height / 2;
                         scroll_offset = scroll_offset.saturating_sub(half);
                         focused_link = None;
@@ -501,19 +572,15 @@ fn run(terminal: &mut DefaultTerminal, initial_path: &Path, initial_source: Stri
 
                     // Next search match (Ctrl-n)
                     KeyCode::Char('n')
-                        if key.modifiers.contains(KeyModifiers::CONTROL)
-                            && search.is_some() =>
+                        if key.modifiers.contains(KeyModifiers::CONTROL) && search.is_some() =>
                     {
                         advance_search_match(&mut search, true);
                         if let Some(ref s) = search {
                             if let Some(idx) = s.current_match {
                                 let line = s.matches[idx].rendered_line;
-                                if line < scroll_offset
-                                    || line >= scroll_offset + viewport_height
-                                {
-                                    scroll_offset = line
-                                        .saturating_sub(viewport_height / 3)
-                                        .min(max_scroll);
+                                if line < scroll_offset || line >= scroll_offset + viewport_height {
+                                    scroll_offset =
+                                        line.saturating_sub(viewport_height / 3).min(max_scroll);
                                 }
                             }
                         }
@@ -534,19 +601,15 @@ fn run(terminal: &mut DefaultTerminal, initial_path: &Path, initial_source: Stri
 
                     // Previous search match (Ctrl-p)
                     KeyCode::Char('p')
-                        if key.modifiers.contains(KeyModifiers::CONTROL)
-                            && search.is_some() =>
+                        if key.modifiers.contains(KeyModifiers::CONTROL) && search.is_some() =>
                     {
                         advance_search_match(&mut search, false);
                         if let Some(ref s) = search {
                             if let Some(idx) = s.current_match {
                                 let line = s.matches[idx].rendered_line;
-                                if line < scroll_offset
-                                    || line >= scroll_offset + viewport_height
-                                {
-                                    scroll_offset = line
-                                        .saturating_sub(viewport_height / 3)
-                                        .min(max_scroll);
+                                if line < scroll_offset || line >= scroll_offset + viewport_height {
+                                    scroll_offset =
+                                        line.saturating_sub(viewport_height / 3).min(max_scroll);
                                 }
                             }
                         }
@@ -582,16 +645,13 @@ fn run(terminal: &mut DefaultTerminal, initial_path: &Path, initial_source: Stri
                                 }
                             });
                             // Auto-scroll to bring focused link into view
-                            if let Some(link) = focused_link
-                                .and_then(|idx| rendered.link_positions.get(idx))
+                            if let Some(link) =
+                                focused_link.and_then(|idx| rendered.link_positions.get(idx))
                             {
                                 let line = link.rendered_line;
-                                if line < scroll_offset
-                                    || line >= scroll_offset + viewport_height
-                                {
-                                    scroll_offset = line
-                                        .saturating_sub(viewport_height / 3)
-                                        .min(max_scroll);
+                                if line < scroll_offset || line >= scroll_offset + viewport_height {
+                                    scroll_offset =
+                                        line.saturating_sub(viewport_height / 3).min(max_scroll);
                                 }
                             }
                         }
@@ -615,16 +675,13 @@ fn run(terminal: &mut DefaultTerminal, initial_path: &Path, initial_source: Stri
                                 }
                             });
                             // Auto-scroll to bring focused link into view
-                            if let Some(link) = focused_link
-                                .and_then(|idx| rendered.link_positions.get(idx))
+                            if let Some(link) =
+                                focused_link.and_then(|idx| rendered.link_positions.get(idx))
                             {
                                 let line = link.rendered_line;
-                                if line < scroll_offset
-                                    || line >= scroll_offset + viewport_height
-                                {
-                                    scroll_offset = line
-                                        .saturating_sub(viewport_height / 3)
-                                        .min(max_scroll);
+                                if line < scroll_offset || line >= scroll_offset + viewport_height {
+                                    scroll_offset =
+                                        line.saturating_sub(viewport_height / 3).min(max_scroll);
                                 }
                             }
                         }
@@ -875,8 +932,7 @@ fn ui(
         return;
     }
 
-    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)])
-        .split(area);
+    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
 
     let viewport_height = chunks[0].height as usize;
 
@@ -1054,10 +1110,7 @@ fn render_outline(
             let indent = "  ".repeat((h.level as usize).saturating_sub(1));
             let prefix = "#".repeat(h.level as usize);
             let style = render::heading_style(h.level);
-            Line::from(Span::styled(
-                format!("{indent}{prefix} {}", h.text),
-                style,
-            ))
+            Line::from(Span::styled(format!("{indent}{prefix} {}", h.text), style))
         })
         .collect();
 

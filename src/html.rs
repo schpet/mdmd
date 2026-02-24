@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 
 use comrak::{
     arena_tree::NodeEdge,
+    format_html,
     nodes::{AstNode, NodeValue},
-    Arena, Options, format_html, parse_document,
+    parse_document, Arena, Options,
 };
 
 // ---------------------------------------------------------------------------
@@ -135,7 +136,7 @@ fn build_toc_html(headings: &[HeadingEntry]) -> String {
     let mut html = String::from("<ul>\n");
     for heading in headings {
         let class = format!("toc-h{}", heading.level);
-        let anchor = heading.anchor_id.as_str();   // anchor_id is already a URL-safe slug
+        let anchor = heading.anchor_id.as_str(); // anchor_id is already a URL-safe slug
         let text = html_escape(&heading.text);
         html.push_str(&format!(
             "<li class=\"{class}\"><a href=\"#{anchor}\">{text}</a></li>\n",
@@ -150,8 +151,7 @@ fn build_toc_html(headings: &[HeadingEntry]) -> String {
 /// Matching is case-insensitive and based on the first whitespace-delimited
 /// token of the info string (for example, `mermaid` in `mermaid title=...`).
 fn is_mermaid_info(info: &str) -> bool {
-    info
-        .split_whitespace()
+    info.split_whitespace()
         .next()
         .map(|lang| lang.eq_ignore_ascii_case("mermaid"))
         .unwrap_or(false)
@@ -386,8 +386,7 @@ pub fn render_markdown(
 
     // --- Render to HTML ---
     let mut html_bytes = Vec::new();
-    format_html(root, &options, &mut html_bytes)
-        .expect("comrak HTML formatting should not fail");
+    format_html(root, &options, &mut html_bytes).expect("comrak HTML formatting should not fail");
     let html = String::from_utf8(html_bytes).expect("comrak output must be valid UTF-8");
 
     eprintln!(
@@ -439,8 +438,7 @@ pub fn build_page_shell(
     // Mermaid is loaded unconditionally to keep shell logic simple.
     // Version is pinned (not @latest) for reproducibility and to avoid silent
     // breakage from upstream CDN updates.
-    const MERMAID_CDN_URL: &str =
-        "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js";
+    const MERMAID_CDN_URL: &str = "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js";
 
     format!(
         "<!DOCTYPE html>\n\
@@ -661,8 +659,16 @@ mod tests {
     fn inject_ids_adds_id_attribute_to_headings() {
         let html = "<h1>Title</h1>\n<h2>Section</h2>\n";
         let headings = vec![
-            HeadingEntry { level: 1, text: "Title".into(), anchor_id: "title".into() },
-            HeadingEntry { level: 2, text: "Section".into(), anchor_id: "section".into() },
+            HeadingEntry {
+                level: 1,
+                text: "Title".into(),
+                anchor_id: "title".into(),
+            },
+            HeadingEntry {
+                level: 2,
+                text: "Section".into(),
+                anchor_id: "section".into(),
+            },
         ];
         let result = inject_heading_ids(html, &headings);
         assert!(result.contains("<h1 id=\"title\">"), "h1 id injected");
@@ -674,12 +680,26 @@ mod tests {
         // Two h2 at different slugs — first match is replaced, second on next pass.
         let html = "<h2>Alpha</h2>\n<h2>Beta</h2>\n";
         let headings = vec![
-            HeadingEntry { level: 2, text: "Alpha".into(), anchor_id: "alpha".into() },
-            HeadingEntry { level: 2, text: "Beta".into(), anchor_id: "beta".into() },
+            HeadingEntry {
+                level: 2,
+                text: "Alpha".into(),
+                anchor_id: "alpha".into(),
+            },
+            HeadingEntry {
+                level: 2,
+                text: "Beta".into(),
+                anchor_id: "beta".into(),
+            },
         ];
         let result = inject_heading_ids(html, &headings);
-        assert!(result.contains("<h2 id=\"alpha\">Alpha</h2>"), "first h2 id=alpha");
-        assert!(result.contains("<h2 id=\"beta\">Beta</h2>"), "second h2 id=beta");
+        assert!(
+            result.contains("<h2 id=\"alpha\">Alpha</h2>"),
+            "first h2 id=alpha"
+        );
+        assert!(
+            result.contains("<h2 id=\"beta\">Beta</h2>"),
+            "second h2 id=beta"
+        );
     }
 
     // --- build_page_shell ---
@@ -688,8 +708,16 @@ mod tests {
     fn page_shell_contains_nav_with_toc() {
         let input = "# Title\n\n## Section\n";
         let (html_body, headings) = render(input);
-        let page = build_page_shell(&html_body, &headings, Path::new("/root/doc.md"), Path::new("/root"));
-        assert!(page.contains("<nav class=\"toc-sidebar\">"), "nav element present");
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/root/doc.md"),
+            Path::new("/root"),
+        );
+        assert!(
+            page.contains("<nav class=\"toc-sidebar\">"),
+            "nav element present"
+        );
         assert!(page.contains("href=\"#title\""), "toc link to h1");
         assert!(page.contains("href=\"#section\""), "toc link to h2");
     }
@@ -698,7 +726,10 @@ mod tests {
     fn page_shell_contains_script_tag() {
         let (html_body, headings) = render("# Hi\n");
         let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"));
-        assert!(page.contains("<script src=\"/assets/mdmd.js\">"), "script tag present");
+        assert!(
+            page.contains("<script src=\"/assets/mdmd.js\">"),
+            "script tag present"
+        );
     }
 
     #[test]
@@ -706,7 +737,9 @@ mod tests {
         let (html_body, headings) = render("# Hi\n");
         let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"));
         assert!(
-            page.contains("<script src=\"https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js\">"),
+            page.contains(
+                "<script src=\"https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js\">"
+            ),
             "mermaid CDN script must be present with pinned semver"
         );
     }
@@ -715,7 +748,10 @@ mod tests {
     fn page_shell_contains_css_link() {
         let (html_body, headings) = render("# Hi\n");
         let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"));
-        assert!(page.contains("href=\"/assets/mdmd.css\""), "css link present");
+        assert!(
+            page.contains("href=\"/assets/mdmd.css\""),
+            "css link present"
+        );
     }
 
     #[test]
@@ -727,7 +763,10 @@ mod tests {
             Path::new("/docs/guide/intro.md"),
             Path::new("/docs"),
         );
-        assert!(page.contains("guide/intro.md"), "relative path shown in header");
+        assert!(
+            page.contains("guide/intro.md"),
+            "relative path shown in header"
+        );
     }
 
     #[test]
@@ -735,8 +774,14 @@ mod tests {
         let input = "# Title\n\n## Sub\n";
         let (html_body, headings) = render(input);
         let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"));
-        assert!(page.contains("<h1 id=\"title\">"), "h1 id injected in content");
-        assert!(page.contains("<h2 id=\"sub\">"), "h2 id injected in content");
+        assert!(
+            page.contains("<h1 id=\"title\">"),
+            "h1 id injected in content"
+        );
+        assert!(
+            page.contains("<h2 id=\"sub\">"),
+            "h2 id injected in content"
+        );
     }
 
     // --- html_escape ---
@@ -928,16 +973,22 @@ mod tests {
     #[test]
     fn rewrite_url_dotdot_within_root() {
         // ../parent.md from /root/subdir → resolves to /root/parent.md → /parent.md
-        let result =
-            rewrite_url("../parent.md", Path::new("/root/subdir"), Path::new("/root"));
+        let result = rewrite_url(
+            "../parent.md",
+            Path::new("/root/subdir"),
+            Path::new("/root"),
+        );
         assert_eq!(result, Some("/parent.md".to_owned()));
     }
 
     #[test]
     fn rewrite_url_dotdot_escaping_root_returns_none() {
         // ../../outside.md from /root/sub → resolves above /root → None
-        let result =
-            rewrite_url("../../outside.md", Path::new("/root/sub"), Path::new("/root"));
+        let result = rewrite_url(
+            "../../outside.md",
+            Path::new("/root/sub"),
+            Path::new("/root"),
+        );
         assert!(result.is_none(), "path escaping root must return None");
     }
 }

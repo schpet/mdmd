@@ -106,18 +106,18 @@ fn render_block(
     link_positions: &mut Vec<LinkPosition>,
 ) {
     match &block.kind {
-        BlockKind::Heading(level) => {
-            render_heading(*level, &block.content, &block.inline_links, lines, link_positions)
-        }
+        BlockKind::Heading(level) => render_heading(
+            *level,
+            &block.content,
+            &block.inline_links,
+            lines,
+            link_positions,
+        ),
         BlockKind::Paragraph => {
             render_paragraph(&block.content, &block.inline_links, lines, link_positions)
         }
-        BlockKind::CodeBlock(ref lang) => {
-            render_code_block(&block.content, lang.as_deref(), lines)
-        }
-        BlockKind::List => {
-            render_list(&block.content, &block.inline_links, lines, link_positions)
-        }
+        BlockKind::CodeBlock(ref lang) => render_code_block(&block.content, lang.as_deref(), lines),
+        BlockKind::List => render_list(&block.content, &block.inline_links, lines, link_positions),
         BlockKind::BlockQuote => {
             render_block_quote(&block.content, &block.inline_links, lines, link_positions)
         }
@@ -332,7 +332,9 @@ fn render_list(
     lines: &mut Vec<Line<'static>>,
     link_positions: &mut Vec<LinkPosition>,
 ) {
-    let bullet_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let bullet_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
     let base_style = Style::default();
     let prefix_width = 4; // "  • " is 4 display columns
 
@@ -367,7 +369,9 @@ fn render_block_quote(
     link_positions: &mut Vec<LinkPosition>,
 ) {
     let bar_style = Style::default().fg(Color::DarkGray);
-    let text_style = Style::default().add_modifier(Modifier::ITALIC).fg(Color::Gray);
+    let text_style = Style::default()
+        .add_modifier(Modifier::ITALIC)
+        .fg(Color::Gray);
     let prefix_width = 4; // "  ▌ " is 4 display columns
 
     let mut content_offset = 0;
@@ -401,10 +405,7 @@ fn render_table(content: &str, lines: &mut Vec<Line<'static>>) {
     for text_line in content.lines() {
         let trimmed = text_line.trim();
         if !trimmed.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("  {trimmed}"),
-                style,
-            )));
+            lines.push(Line::from(Span::styled(format!("  {trimmed}"), style)));
         }
     }
 }
@@ -429,7 +430,13 @@ mod tests {
     fn code_block_has_borders() {
         let doc = parse::parse("```\nhello\n```\n");
         let rendered = render_document(&doc);
-        let joined: String = rendered.text.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let joined: String = rendered
+            .text
+            .lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(joined.contains("┌"));
         assert!(joined.contains("hello"));
         assert!(joined.contains("└"));
@@ -439,7 +446,13 @@ mod tests {
     fn list_has_bullets() {
         let doc = parse::parse("- alpha\n- beta\n");
         let rendered = render_document(&doc);
-        let joined: String = rendered.text.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let joined: String = rendered
+            .text
+            .lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(joined.contains("•"));
         assert!(joined.contains("alpha"));
         assert!(joined.contains("beta"));
@@ -449,7 +462,13 @@ mod tests {
     fn block_quote_has_bar() {
         let doc = parse::parse("> quoted\n");
         let rendered = render_document(&doc);
-        let joined: String = rendered.text.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let joined: String = rendered
+            .text
+            .lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(joined.contains("▌"));
         assert!(joined.contains("quoted"));
     }
@@ -458,7 +477,13 @@ mod tests {
     fn thematic_break_renders() {
         let doc = parse::parse("above\n\n---\n\nbelow\n");
         let rendered = render_document(&doc);
-        let joined: String = rendered.text.lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let joined: String = rendered
+            .text
+            .lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(joined.contains("────"));
     }
 

@@ -517,9 +517,7 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     let decoded = match percent_decode(&raw_path) {
         Ok(d) => d,
         Err(_) => {
-            eprintln!(
-                "[resolve] path={raw_path} branch=denied reason=invalid-percent-encoding"
-            );
+            eprintln!("[resolve] path={raw_path} branch=denied reason=invalid-percent-encoding");
             return not_found_response();
         }
     };
@@ -582,19 +580,14 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     let mtime = file_meta.modified().ok();
 
     if size > MAX_FILE_SIZE {
-        eprintln!(
-            "[resolve] path={norm_display} branch=denied reason=too-large size={size}"
-        );
+        eprintln!("[resolve] path={norm_display} branch=denied reason=too-large size={size}");
         return too_large_response(&norm_display, size);
     }
 
     eprintln!("[resolve] path={norm_display} branch={branch} size={size}");
 
     // Step 7: dispatch on extension.
-    let ext = canonical
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = canonical.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     if ext.eq_ignore_ascii_case("md") {
         let content = match tokio::fs::read_to_string(&canonical).await {
@@ -639,12 +632,7 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
         // Default: render as a full HTML page with TOC shell.
         let (html_body, headings) =
             html::render_markdown(&content, &canonical, &state.canonical_root);
-        let page = html::build_page_shell(
-            &html_body,
-            &headings,
-            &canonical,
-            &state.canonical_root,
-        );
+        let page = html::build_page_shell(&html_body, &headings, &canonical, &state.canonical_root);
 
         let etag = compute_etag(page.as_bytes());
         let last_modified = mtime
@@ -754,11 +742,10 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
         asset_mtime,
     });
 
-    let (std_listener, bound_port) =
-        bind_with_retry(&bind_addr, start_port).map_err(|msg| {
-            eprintln!("Error: {}", msg);
-            io::Error::new(io::ErrorKind::AddrInUse, msg)
-        })?;
+    let (std_listener, bound_port) = bind_with_retry(&bind_addr, start_port).map_err(|msg| {
+        eprintln!("Error: {}", msg);
+        io::Error::new(io::ErrorKind::AddrInUse, msg)
+    })?;
 
     std_listener.set_nonblocking(true)?;
     let listener = tokio::net::TcpListener::from_std(std_listener)?;
@@ -768,13 +755,17 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
     // outermost layer so it wraps all handler responses.
     let app = Router::new()
         .fallback(serve_handler)
-        .with_state(state)
+        .with_state(state.clone())
         .layer(CompressionLayer::new());
 
     eprintln!("[serve] listening on {}:{}", bind_addr, bound_port);
 
+    // Stable startup banner (stdout) for integration/e2e checks.
+    println!("mdmd serve");
+    println!("root:  {}", state.canonical_root.display());
+    println!("entry: {}", state.entry_file.display());
     // Always print localhost URL.
-    eprintln!("url:   http://127.0.0.1:{bound_port}");
+    println!("url:   http://127.0.0.1:{bound_port}");
 
     // Conditionally print Tailscale URL when available.
     let tailscale_host = tokio::task::spawn_blocking(tailscale_dns_name)
@@ -782,7 +773,7 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
         .ok()
         .flatten();
     if let Some(ref host) = tailscale_host {
-        eprintln!("url:   http://{host}:{bound_port}");
+        println!("url:   http://{host}:{bound_port}");
     }
 
     axum::serve(listener, app)
@@ -944,7 +935,10 @@ mod tests {
 
     #[test]
     fn normalize_simple_path() {
-        assert_eq!(normalize_path("/docs/guide").unwrap(), PathBuf::from("docs/guide"));
+        assert_eq!(
+            normalize_path("/docs/guide").unwrap(),
+            PathBuf::from("docs/guide")
+        );
     }
 
     #[test]
@@ -984,21 +978,30 @@ mod tests {
     fn normalize_encoded_dotdot_after_decode() {
         // Simulate full pipeline: decode %2e%2e → ".." then normalize
         let decoded = percent_decode("/%2e%2e/etc/passwd").unwrap();
-        assert!(normalize_path(&decoded).is_none(), "traversal via %2e%2e must be rejected");
+        assert!(
+            normalize_path(&decoded).is_none(),
+            "traversal via %2e%2e must be rejected"
+        );
     }
 
     #[test]
     fn normalize_encoded_slash_and_dotdot() {
         // %2e%2e%2fetc%2fpasswd → ../etc/passwd  (slash also encoded)
         let decoded = percent_decode("/%2e%2e%2fetc%2fpasswd").unwrap();
-        assert!(normalize_path(&decoded).is_none(), "traversal via %2e%2e%2f must be rejected");
+        assert!(
+            normalize_path(&decoded).is_none(),
+            "traversal via %2e%2e%2f must be rejected"
+        );
     }
 
     #[test]
     fn normalize_mixed_case_encoded_dotdot() {
         // /%2E%2E/ → "../" path component
         let decoded = percent_decode("/%2E%2E/").unwrap();
-        assert!(normalize_path(&decoded).is_none(), "%2E%2E traversal must be rejected");
+        assert!(
+            normalize_path(&decoded).is_none(),
+            "%2E%2E traversal must be rejected"
+        );
     }
 
     #[test]
@@ -1090,8 +1093,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_exact_file() {
-        let dir = std::env::temp_dir()
-            .join(format!("mdmd_resolve_exact_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mdmd_resolve_exact_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("page.md"), b"# Hello").unwrap();
 
@@ -1105,8 +1107,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_extensionless_falls_back_to_md() {
-        let dir = std::env::temp_dir()
-            .join(format!("mdmd_resolve_ext_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mdmd_resolve_ext_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("guide.md"), b"# Guide").unwrap();
 
@@ -1121,8 +1122,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_directory_readme() {
-        let dir = std::env::temp_dir()
-            .join(format!("mdmd_resolve_readme_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mdmd_resolve_readme_{}", std::process::id()));
         let sub = dir.join("docs");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join("README.md"), b"# Readme").unwrap();
@@ -1137,8 +1137,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_directory_index_fallback() {
-        let dir = std::env::temp_dir()
-            .join(format!("mdmd_resolve_index_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mdmd_resolve_index_{}", std::process::id()));
         let sub = dir.join("docs");
         std::fs::create_dir_all(&sub).unwrap();
         // No README.md — only index.md.
@@ -1154,8 +1153,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_nonexistent_returns_none() {
-        let dir = std::env::temp_dir()
-            .join(format!("mdmd_resolve_missing_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mdmd_resolve_missing_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let candidate = dir.join("no_such_file");

@@ -172,7 +172,11 @@ fn tag_to_block_kind(tag: &Tag) -> Option<BlockKind> {
             let lang = match kind {
                 CodeBlockKind::Fenced(info) => {
                     let s = info.split_whitespace().next().unwrap_or("").to_string();
-                    if s.is_empty() { None } else { Some(s) }
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(s)
+                    }
                 }
                 CodeBlockKind::Indented => None,
             };
@@ -193,9 +197,8 @@ fn tag_to_block_kind(tag: &Tag) -> Option<BlockKind> {
 pub fn parse(source: &str) -> ParsedDocument {
     let line_index = LineIndex::new(source);
 
-    let options = Options::ENABLE_TABLES
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS;
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let parser = Parser::new_ext(source, options);
 
     let mut blocks: Vec<ContentBlock> = Vec::new();
@@ -257,8 +260,7 @@ pub fn parse(source: &str) -> ParsedDocument {
                         dest_url,
                         ..
                     } => {
-                        in_link =
-                            Some((dest_url.to_string(), link_type_to_kind(link_type, false)));
+                        in_link = Some((dest_url.to_string(), link_type_to_kind(link_type, false)));
                         link_line = line_index.line_at(range.start);
                         link_text_buf.clear();
                         link_content_start = text_buf.len();
@@ -268,8 +270,7 @@ pub fn parse(source: &str) -> ParsedDocument {
                         dest_url,
                         ..
                     } => {
-                        in_link =
-                            Some((dest_url.to_string(), link_type_to_kind(link_type, true)));
+                        in_link = Some((dest_url.to_string(), link_type_to_kind(link_type, true)));
                         link_line = line_index.line_at(range.start);
                         link_text_buf.clear();
                         link_content_start = text_buf.len();
@@ -284,8 +285,8 @@ pub fn parse(source: &str) -> ParsedDocument {
                     if block_depth == 0 {
                         if let Some((kind, start_offset)) = current_block.take() {
                             let start_line = line_index.line_at(start_offset);
-                            let end_line = line_index
-                                .line_at(range.end.saturating_sub(1).max(start_offset));
+                            let end_line =
+                                line_index.line_at(range.end.saturating_sub(1).max(start_offset));
                             blocks.push(ContentBlock {
                                 kind,
                                 line_start: start_line,
@@ -367,8 +368,7 @@ pub fn parse(source: &str) -> ParsedDocument {
                     blocks.push(ContentBlock {
                         kind: BlockKind::HtmlBlock,
                         line_start: line_index.line_at(range.start),
-                        line_end: line_index
-                            .line_at(range.end.saturating_sub(1).max(range.start)),
+                        line_end: line_index.line_at(range.end.saturating_sub(1).max(range.start)),
                         content: html.to_string(),
                         inline_links: Vec::new(),
                     });
