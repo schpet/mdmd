@@ -95,12 +95,29 @@ mdmd serve <entry_path>
                 +--> render rich 404 page with nearest-parent listing
 ```
 
+## Current State (as of input commit)
+
+The following items from this plan are **already implemented** and must not be re-implemented:
+
+- `entry_url_path: String` field in `AppState` (`serve.rs:87-105`)
+- `derive_entry_url_path()` at startup, including percent-encoding via `percent_encode_segment()` (`serve.rs:326-357`)
+- `percent_encode_segment()` and `percent_decode()` utilities (`serve.rs:231-324`)
+- Startup banner printing both primary entry URL (`url:`) and root index (`index:`) lines (`serve.rs:867-883`)
+- `resolve_candidate()` with exact / extensionless / readme / index fallbacks (`serve.rs:359-408`)
+- `rewrite_local_links()` rewriting AST link nodes to root-relative hrefs (`html.rs:278-307`)
+
+**What remains to implement** (actual work for this plan):
+
+- `GET /` currently serves entry content, not a directory index — the route handler must change.
+- Directory index renderer (new function, new HTML template).
+- Rich 404 renderer (new function, new HTML template).
+- Test migrations and new test cases (see Step 6).
+
 ## Implementation Steps
 
-1. AppState and startup URL
-- Add `entry_url_path: String` to `AppState`.
-- Compute `entry_url_path` at startup from `entry_file` relative to `canonical_root` with percent-encoding.
-- Update startup output to include both primary entry URL and root index URL.
+1. ~~AppState and startup URL~~ — already done. Verify only.
+- Confirm `AppState.entry_url_path` is set correctly and startup banner prints `url:` and `index:` lines.
+- Run `cargo test serve_startup_stdout` to validate. If the test passes, proceed; do not touch this code.
 
 2. Root route behavior
 - Change `/` handler from serving entry content directly to rendering the `serve_root` directory index.
@@ -118,15 +135,20 @@ mdmd serve <entry_path>
 - Add HTML 404 template with nearest-parent recovery links and optional listing.
 
 6. Test updates
-- Update current tests that expect `GET /` to return entry content.
-- Add assertions that `GET /` returns root directory index content.
-- Add/extend integration tests for:
-  - navigating from `/` root index to entry document link reaches entry content
-  - nested relative Markdown links
-  - directory index output (breadcrumbs + expected links)
-  - hidden entries excluded
-  - rich 404 response with nearest-parent links/listing
-- Add targeted unit tests for entry URL path computation (including spaces/unicode percent-encoding).
+- **Migrate** existing tests that assert `GET /` returns entry content:
+  - `test_serve_basic_html` (line 366): update expected body to match directory index HTML, not markdown-rendered entry.
+  - `test_serve_toc_present` (line 376): update or split so TOC assertion targets `GET <entry_url_path>`, not `GET /`.
+  - Any other test hitting `GET /` and asserting markdown prose or TOC elements.
+- **Add** assertions that `GET /` returns root directory index (status 200, `Content-Type: text/html`, contains listing of top-level entries).
+- **Add/extend** integration tests for:
+  - `GET <entry_url_path>` reaches entry content (status 200, rendered markdown).
+  - Navigating from `/` root index link to entry document reaches entry content.
+  - Nested relative Markdown links: a page at `/playground/sub/page.md` with `[x](../other.md)` resolves to `/playground/other.md`.
+  - Directory index: status 200, breadcrumb contains correct segments, expected file/dir links present.
+  - Hidden entries excluded from directory index (dotfile/dotdir not listed).
+  - Symlink out of `serve_root` omitted from directory index.
+  - Rich 404 response: status 404, nearest-parent link present, no crash on missing path.
+- **Add** unit tests for `derive_entry_url_path()` covering: ASCII-only path, spaces in segment, Unicode in segment, path with single component, path equal to `serve_root` (edge: empty relative path).
 
 ## Explicitly Out Of Scope
 
@@ -135,6 +157,44 @@ mdmd serve <entry_path>
 
 ## Risks and Compatibility Notes
 
-- `/` semantics change from direct entry rendering to root directory index; this can break existing clients/tests that assumed entry content at `/`.
-- Keeping startup output pathful URL primary preserves canonical entry navigation while root remains browsable.
-- Directory index omission rules (hidden files and out-of-root symlinks) should be documented in help/docs after implementation.
+### Breaking changes
+- **`GET /` behavior regression** (high probability): At least `test_serve_basic_html` and `test_serve_toc_present` assert that `GET /` returns rendered markdown/TOC. These will fail immediately after Step 2. The test migration in Step 6 **must** be done in the same commit as Step 2 or the build will be in a broken-test state.
+- **Startup banner line format**: `test_serve_startup_stdout_format` validates exact `url:` and `index:` line patterns. Do not change startup output format in Steps 2–5 without updating that test.
+
+### HTML safety in generated pages
+- **XSS in directory index and 404 page**: File names containing `<`, `>`, `"`, `&` must be HTML-escaped in display text and `href` attributes. Use a helper function for HTML escaping; do not use string interpolation unescaped. Failure to escape means a file named `<script>alert(1)</script>.md` could inject script tags into the index page.
+- **href encoding in directory index**: Each path segment in generated hrefs must pass through `percent_encode_segment()` (already available). A filename containing `#`, `?`, `%`, or space breaks browser navigation if un-encoded.
+
+### File-system edge cases
+- **Directory read failure**: `tokio::fs::read_dir()` returns `io::Error` on permission-denied or I/O error. The directory index renderer must return a 500 error response with a plain message, not panic or hang.
+- **Empty directory**: A directory with no entries (after dotfile filtering) must render a valid index page with an appropriate "empty" message rather than malformed HTML.
+- **Very large directories**: No pagination is planned. Directories with thousands of visible entries will produce a large HTML response. This is acceptable for a local tool but should not cause a timeout or OOM; use streaming or collect the full entry list in memory with a reasonable cap (e.g., warn and truncate after 10 000 entries).
+- **Nearest-parent walk for 404**: The ancestor-search loop must stop at `serve_root` and not ascend above it. Must handle the degenerate case where the requested path decodes to exactly `serve_root` or an empty relative path.
+
+### Symlink handling
+- **Containment re-check after canonicalize**: When listing a directory, each symlink entry must have its resolved target checked against `canonical_root` before inclusion. The existing `canonical_root`-prefix containment pattern (already used in the request handler) should be reused.
+- **Symlink cycle safety**: `tokio::fs::canonicalize()` resolves the full chain and will surface an `io::Error` on OS-level cycle detection. Treat that error as "omit entry from listing" rather than propagate it.
+
+### Behavioral edge cases
+- **Entry at `serve_root` root**: If a user runs `mdmd serve README.md` from the same directory containing `README.md`, `entry_url_path` is `/README.md` and `GET /` renders the top-level directory index (not the README). This is intentional but differs from the pre-change behavior where `GET /` showed the README. Verify the startup `url:` line correctly prints `/README.md` in this case.
+- **Non-markdown static files at explicit paths**: `GET /image.png` should still serve the raw bytes via the existing static asset fallback. The directory index path must not intercept non-directory paths.
+
+## Validation Strategy
+
+Run after each implementation step before moving to the next:
+
+| After step | Command | Expected outcome |
+|---|---|---|
+| 1 (verify) | `cargo test serve_startup_stdout` | Test passes unchanged |
+| 2 | `cargo build` | Compiles without errors or warnings |
+| 2 + 6 (migrate tests) | `cargo test` | No test failures |
+| 4 | `cargo test serve_dir` (or new test) | Directory index returns 200 with HTML listing |
+| 5 | `cargo test serve_404` (or new test) | 404 response contains nearest-parent link |
+| All | `cargo test` | Full suite green |
+| All | `cargo run -- serve playground/README.md` (manual) | Browser opens; relative links navigate correctly; `/` shows dir index; broken link shows 404 page |
+
+## Operational Checks Before Starting
+
+1. Run `cargo test` on the input commit and record the passing test count as baseline.
+2. Confirm `entry_url_path` is set: add a temporary `eprintln!` in a test or inspect the `test_serve_startup_stdout_format` assertions to verify the field is correct.
+3. Confirm `GET /` currently returns entry content (not a directory index) so the behavioral gap is understood before changing it.
