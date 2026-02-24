@@ -431,6 +431,217 @@ fn not_found_response() -> Response {
         .expect("not_found_response builder is infallible")
 }
 
+/// Minimal HTML escaping for text content and attribute values.
+///
+/// Replaces `<`, `>`, `&`, and `"` with their entity equivalents.
+fn html_escape_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Find the nearest existing ancestor directory of `norm_display` that lies
+/// within `canonical_root`.
+///
+/// Starts from the parent of `serve_root.join(norm_display)` and walks upward
+/// through the filesystem hierarchy, returning the deepest existing directory
+/// whose canonicalized path is contained within `canonical_root`.
+///
+/// Always returns at least `canonical_root` itself (the root), which is
+/// guaranteed to exist.  The function never returns a path outside
+/// `canonical_root`.
+pub fn nearest_existing_parent(
+    serve_root: &Path,
+    canonical_root: &Path,
+    norm_display: &str,
+) -> PathBuf {
+    // Build the full (unresolved) path for the missing resource.
+    let missing = serve_root.join(norm_display);
+
+    // Walk upward from the missing resource's location.
+    let mut candidate = missing;
+    loop {
+        candidate = match candidate.parent() {
+            Some(p) => p.to_path_buf(),
+            None => return canonical_root.to_path_buf(),
+        };
+
+        // Avoid infinite loop at filesystem root (parent == self).
+        if candidate.as_os_str().is_empty() {
+            return canonical_root.to_path_buf();
+        }
+
+        // Check if this path is an existing directory inside canonical_root.
+        if let Ok(meta) = std::fs::metadata(&candidate) {
+            if meta.is_dir() {
+                if let Ok(canon) = std::fs::canonicalize(&candidate) {
+                    if canon.starts_with(canonical_root) {
+                        return canon;
+                    }
+                }
+                // Directory is outside root — keep walking up.
+            }
+        }
+    }
+}
+
+/// Build an HTML snippet listing the contents of `dir_path` (nearest parent).
+///
+/// Applies the same policy as the full directory index (dotfile exclusion,
+/// symlink containment, dirs-first alphabetical sort).  Returns an empty
+/// string when the directory cannot be read or is empty after filtering.
+async fn build_nearest_parent_listing(
+    state: &Arc<AppState>,
+    dir_path: &Path,
+    url_prefix: &str,
+) -> String {
+    let mut rd = match tokio::fs::read_dir(dir_path).await {
+        Ok(rd) => rd,
+        Err(_) => return String::new(),
+    };
+
+    let mut raw_entries: Vec<(String, bool)> = Vec::new();
+    loop {
+        match rd.next_entry().await {
+            Ok(Some(entry)) => {
+                let name = match entry.file_name().to_str().map(|s| s.to_owned()) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                if name.starts_with('.') {
+                    continue;
+                }
+                let entry_path = entry.path();
+                // Symlink containment: skip out-of-root symlinks.
+                let file_type = match entry.file_type().await {
+                    Ok(ft) => ft,
+                    Err(_) => continue,
+                };
+                if file_type.is_symlink() {
+                    match tokio::fs::canonicalize(&entry_path).await {
+                        Ok(target) if target.starts_with(&state.canonical_root) => {}
+                        _ => continue,
+                    }
+                }
+                let is_dir = match tokio::fs::metadata(&entry_path).await {
+                    Ok(m) => m.is_dir(),
+                    Err(_) => continue,
+                };
+                raw_entries.push((name, is_dir));
+            }
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+
+    let entries = apply_dir_listing_policy(raw_entries);
+    if entries.is_empty() {
+        return String::new();
+    }
+
+    let base = if url_prefix.ends_with('/') {
+        url_prefix.to_owned()
+    } else {
+        format!("{url_prefix}/")
+    };
+
+    let prefix_escaped = html_escape_text(url_prefix);
+    let mut html = format!("<h2>Contents of {prefix_escaped}</h2><ul>");
+    for (name, is_dir) in &entries {
+        let encoded = percent_encode_segment(name);
+        let href = if *is_dir {
+            format!("{base}{encoded}/")
+        } else {
+            format!("{base}{encoded}")
+        };
+        let href_escaped = html_escape_text(&href);
+        let name_escaped = html_escape_text(name);
+        html.push_str(&format!(
+            "<li><a href=\"{href_escaped}\">{name_escaped}</a></li>"
+        ));
+    }
+    html.push_str("</ul>");
+    html
+}
+
+/// Rich HTML 404 response with nearest-parent recovery links.
+///
+/// Renders the requested path, links to the entry document, root index, and
+/// the nearest existing ancestor directory, plus a listing of that directory.
+///
+/// Called only for genuine unresolved-path misses.  Security-denial branches
+/// continue to use the terse `not_found_response()` to avoid disclosing
+/// internal path information.
+async fn rich_not_found_response(state: &Arc<AppState>, norm_display: &str) -> Response {
+    let requested_path = format!("/{norm_display}");
+
+    // Find nearest existing parent directory within canonical_root.
+    let nearest_parent =
+        nearest_existing_parent(&state.serve_root, &state.canonical_root, norm_display);
+
+    // Derive URL path for nearest parent (add trailing slash for directories).
+    let parent_url = derive_entry_url_path(&nearest_parent, &state.canonical_root)
+        .unwrap_or_else(|_| "/".to_owned());
+    let parent_url = if parent_url == "/" {
+        "/".to_owned()
+    } else {
+        format!("{parent_url}/")
+    };
+
+    // Build directory listing snippet for nearest parent.
+    let listing_html =
+        build_nearest_parent_listing(state, &nearest_parent, &parent_url).await;
+
+    let requested_escaped = html_escape_text(&requested_path);
+    let parent_url_escaped = html_escape_text(&parent_url);
+    let entry_url_escaped = html_escape_text(&state.entry_url_path);
+
+    let body = format!(
+        "<!DOCTYPE html>\
+<html lang=\"en\">\
+<head>\
+<meta charset=\"utf-8\">\
+<title>404 Not Found</title>\
+<link rel=\"stylesheet\" href=\"/assets/mdmd.css\">\
+</head>\
+<body>\
+<main class=\"content\">\
+<h1>404 Not Found</h1>\
+<p>The requested path was not found:</p>\
+<pre><code>{requested_escaped}</code></pre>\
+<h2>Recovery options</h2>\
+<ul>\
+<li><a href=\"/\">Root index</a></li>\
+<li><a href=\"{entry_url_escaped}\">Entry document</a></li>\
+<li><a href=\"{parent_url_escaped}\">Nearest parent: {parent_url_escaped}</a></li>\
+</ul>\
+{listing_html}\
+</main>\
+</body>\
+</html>"
+    );
+
+    eprintln!(
+        "[404] path={norm_display} nearest_parent={}",
+        nearest_parent.display()
+    );
+
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(Body::from(body))
+        .expect("rich_not_found_response builder is infallible")
+}
+
 /// 413 Content Too Large with mandatory security headers.
 fn too_large_response(norm_path: &str, size: u64) -> Response {
     let body = format!(
@@ -796,8 +1007,8 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
                         .await;
                 }
             }
-            eprintln!("[resolve] path={norm_display} branch=denied reason=not-found");
-            return not_found_response();
+            eprintln!("[resolve] path={norm_display} branch=not-found");
+            return rich_not_found_response(&state, &norm_display).await;
         }
     };
 
@@ -1655,5 +1866,90 @@ mod tests {
         assert!(resolve_candidate(&candidate).await.is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- nearest_existing_parent ---
+
+    /// Helper: create a temp directory tree and return the canonical root.
+    fn make_temp_root(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let canonical = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+        let _ = name; // disambiguates call sites in diagnostics
+        (tmp, canonical)
+    }
+
+    #[test]
+    fn nearest_parent_missing_leaf_returns_direct_parent() {
+        // Structure: root/docs/ exists, root/docs/missing.md does not.
+        let (_tmp, root) = make_temp_root("nep_leaf");
+        let docs = root.join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+
+        let result = nearest_existing_parent(&root, &root, "docs/missing.md");
+        assert_eq!(
+            result,
+            std::fs::canonicalize(&docs).unwrap(),
+            "should return existing docs/ dir"
+        );
+    }
+
+    #[test]
+    fn nearest_parent_multi_level_miss_walks_up() {
+        // Structure: root/ exists, root/a/b/c/ does not exist.
+        let (_tmp, root) = make_temp_root("nep_multi");
+        // Only root itself exists (no subdirs created).
+
+        let result = nearest_existing_parent(&root, &root, "a/b/c/missing.md");
+        assert_eq!(result, root, "should fall back to root when all parents missing");
+    }
+
+    #[test]
+    fn nearest_parent_root_fallback_when_nothing_exists() {
+        // Structure: only root/ exists, no subdirs.
+        let (_tmp, root) = make_temp_root("nep_root");
+
+        let result = nearest_existing_parent(&root, &root, "deep/path/missing.md");
+        assert_eq!(result, root, "should return root as ultimate fallback");
+    }
+
+    #[test]
+    fn nearest_parent_intermediate_dir_exists() {
+        // Structure: root/a/b/ exists, root/a/b/c/ does not.
+        let (_tmp, root) = make_temp_root("nep_intermediate");
+        let b = root.join("a").join("b");
+        std::fs::create_dir_all(&b).unwrap();
+
+        let result = nearest_existing_parent(&root, &root, "a/b/c/deep/missing.md");
+        assert_eq!(
+            result,
+            std::fs::canonicalize(&b).unwrap(),
+            "should return deepest existing ancestor a/b/"
+        );
+    }
+
+    #[test]
+    fn nearest_parent_single_segment_missing_returns_root() {
+        // Structure: root/ only — root/missing.md does not exist.
+        let (_tmp, root) = make_temp_root("nep_single");
+
+        let result = nearest_existing_parent(&root, &root, "missing.md");
+        assert_eq!(result, root, "single missing file should return root");
+    }
+
+    #[test]
+    fn nearest_parent_encoded_segment_treated_as_literal() {
+        // norm_display comes through normalize_path so percent-encoding has
+        // already been decoded; the segment is used literally as a dir name.
+        let (_tmp, root) = make_temp_root("nep_encoded");
+        // Create a directory whose name contains a space (decoded from %20).
+        let spaced = root.join("my docs");
+        std::fs::create_dir_all(&spaced).unwrap();
+
+        let result = nearest_existing_parent(&root, &root, "my docs/missing.md");
+        assert_eq!(
+            result,
+            std::fs::canonicalize(&spaced).unwrap(),
+            "decoded path segment should match dir with spaces"
+        );
     }
 }

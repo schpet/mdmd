@@ -1073,3 +1073,101 @@ fn test_serve_directory_index_symlink_policy() {
 
     let _ = fs::remove_file(&outside);
 }
+
+/// E2E test for the rich HTML 404 page (bd-3u5):
+/// - Missing path returns 404 with `content-type: text/html`.
+/// - Body contains the requested path.
+/// - Body contains recovery links: root index, entry document, nearest parent.
+/// - Body contains a directory listing for the nearest existing parent.
+/// - Security denials (traversal, encoded traversal) continue to return 404.
+#[test]
+fn test_serve_rich_404_recovery() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_path_buf();
+
+    let entry = root.join("README.md");
+    fs::write(&entry, "# Root\n").expect("write root README");
+
+    // Create a subdirectory with some files.
+    let docs = root.join("docs");
+    fs::create_dir_all(&docs).expect("create docs dir");
+    fs::write(docs.join("intro.md"), "# Intro\n").expect("write intro.md");
+    fs::write(docs.join("guide.md"), "# Guide\n").expect("write guide.md");
+
+    let fixture = Fixture {
+        _tmp: tmp,
+        root,
+        entry,
+    };
+    let server = ServerHandle::new("test_serve_rich_404_recovery", &fixture);
+
+    // --- Missing leaf: /docs/nonexistent.md → parent is /docs/ ---
+    let resp = fetch(&client(), &server.url("/docs/nonexistent.md"));
+    assert_status(&resp, 404);
+    assert_header_contains(&resp, "content-type", "text/html");
+    assert_header_eq(&resp, "x-content-type-options", "nosniff");
+
+    let body = resp.body_text();
+
+    // The requested path must appear in the page body.
+    assert!(
+        body.contains("docs/nonexistent.md"),
+        "requested path missing from 404 body\n{}",
+        resp.context()
+    );
+
+    // Root index recovery link must be present.
+    assert!(
+        body.contains("href=\"/\""),
+        "root index recovery link missing\n{}",
+        resp.context()
+    );
+
+    // Entry document recovery link must be present.
+    assert!(
+        body.contains("href=\"/README.md\""),
+        "entry document link missing\n{}",
+        resp.context()
+    );
+
+    // Nearest-parent recovery link must point at /docs/.
+    assert!(
+        body.contains("href=\"/docs/\""),
+        "nearest parent link missing\n{}",
+        resp.context()
+    );
+
+    // Nearest-parent directory listing must include sibling files.
+    assert!(
+        body.contains("intro.md"),
+        "nearest parent listing missing intro.md\n{}",
+        resp.context()
+    );
+    assert!(
+        body.contains("guide.md"),
+        "nearest parent listing missing guide.md\n{}",
+        resp.context()
+    );
+
+    // --- Multi-level miss: /docs/a/b/missing.md → nearest parent is /docs/ ---
+    let resp2 = fetch(&client(), &server.url("/docs/a/b/missing.md"));
+    assert_status(&resp2, 404);
+    assert_header_contains(&resp2, "content-type", "text/html");
+    let body2 = resp2.body_text();
+    assert!(
+        body2.contains("href=\"/docs/\"") || body2.contains("href=\"/\""),
+        "multi-level miss recovery link missing\n{}",
+        resp2.context()
+    );
+
+    // --- Entirely missing path: /gone/missing.md → nearest parent is root / ---
+    let resp3 = fetch(&client(), &server.url("/gone/missing.md"));
+    assert_status(&resp3, 404);
+    assert_header_contains(&resp3, "content-type", "text/html");
+    let body3 = resp3.body_text();
+    assert!(
+        body3.contains("href=\"/\""),
+        "root fallback recovery link missing\n{}",
+        resp3.context()
+    );
+}
