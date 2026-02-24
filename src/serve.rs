@@ -13,6 +13,7 @@ use axum::{
 use tokio::signal;
 
 use crate::html;
+use crate::web_assets;
 
 /// Maximum number of consecutive ports to try before giving up.
 const MAX_PORT_ATTEMPTS: u16 = 100;
@@ -232,21 +233,12 @@ fn too_large_response(norm_path: &str, size: u64) -> Response {
         .expect("too_large_response builder is infallible")
 }
 
-/// Wrap a rendered HTML fragment in a minimal full HTML page document.
-fn wrap_html_page(body_html: &str, title: &str) -> String {
-    format!(
-        "<!DOCTYPE html>\n\
-         <html lang=\"en\">\n\
-         <head>\n\
-         <meta charset=\"utf-8\">\n\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <title>{title}</title>\n\
-         </head>\n\
-         <body>\n\
-         {body_html}\
-         </body>\n\
-         </html>\n"
-    )
+/// Return `true` when the query string contains the `raw=1` parameter.
+///
+/// Parses the raw query string (e.g. `"raw=1&foo=bar"`) by splitting on `&`
+/// and looking for an exact match of `"raw=1"`.
+fn is_raw_mode(query: &str) -> bool {
+    query.split('&').any(|param| param == "raw=1")
 }
 
 // ---------------------------------------------------------------------------
@@ -256,17 +248,41 @@ fn wrap_html_page(body_html: &str, title: &str) -> String {
 /// Main request handler: implements the 7-step secure path resolution pipeline.
 ///
 /// Steps:
+/// 0. Early-exit: `/assets/mdmd.css` and `/assets/mdmd.js` are served from
+///    embedded constants without touching the file system.
 /// 1. Percent-decode the raw request path (before any normalisation).
 /// 2. Normalise: strip `.`/`..` via component iteration; reject traversal above root.
 /// 3. Construct candidate = `serve_root` + normalised path.
 /// 4. Fallback resolution: exact → `.md` (extensionless) → `README.md`/`index.md`.
 /// 5. (R1) Canonicalise the resolved path and re-verify containment in `canonical_root`.
 /// 6. (R5) Stat the file; reject with 413 if size exceeds `MAX_FILE_SIZE`.
-/// 7. Dispatch: `.md` → render as HTML page; otherwise serve raw bytes.
+/// 7. Dispatch: `.md` files are rendered as HTML (or returned as `text/plain` when
+///    `?raw=1` is present); all other files are served as static assets.
 ///
 /// All responses include `X-Content-Type-Options: nosniff` (R6).
 async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Response {
     let raw_path = req.uri().path().to_owned();
+    let query = req.uri().query().unwrap_or("").to_owned();
+
+    // Step 0: serve embedded static assets early — no filesystem access needed.
+    if raw_path == "/assets/mdmd.css" {
+        eprintln!("[request] path={raw_path} mode=asset");
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/css; charset=utf-8")
+            .header("X-Content-Type-Options", "nosniff")
+            .body(Body::from(web_assets::CSS))
+            .expect("css asset response builder is infallible");
+    }
+    if raw_path == "/assets/mdmd.js" {
+        eprintln!("[request] path={raw_path} mode=asset");
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/javascript; charset=utf-8")
+            .header("X-Content-Type-Options", "nosniff")
+            .body(Body::from(web_assets::JS))
+            .expect("js asset response builder is infallible");
+    }
 
     // Step 1: percent-decode.
     let decoded = match percent_decode(&raw_path) {
@@ -350,18 +366,32 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
         .unwrap_or("");
 
     if ext.eq_ignore_ascii_case("md") {
-        // Render markdown as a full HTML page.
         let content = match tokio::fs::read_to_string(&canonical).await {
             Ok(c) => c,
             Err(_) => return not_found_response(),
         };
-        let (html_body, _headings) =
+
+        // ?raw=1 — return the markdown source as plain text.
+        if is_raw_mode(&query) {
+            eprintln!("[request] path={norm_display} mode=raw");
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .header("X-Content-Type-Options", "nosniff")
+                .body(Body::from(content))
+                .expect("raw mode response builder is infallible");
+        }
+
+        // Default: render as a full HTML page with TOC shell.
+        let (html_body, headings) =
             html::render_markdown(&content, &canonical, &state.canonical_root);
-        let title = canonical
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Document");
-        let page = wrap_html_page(&html_body, title);
+        let page = html::build_page_shell(
+            &html_body,
+            &headings,
+            &canonical,
+            &state.canonical_root,
+        );
+        eprintln!("[request] path={norm_display} mode=rendered");
         Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
@@ -443,6 +473,24 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- is_raw_mode ---
+
+    #[test]
+    fn raw_mode_detected_when_param_present() {
+        assert!(is_raw_mode("raw=1"));
+        assert!(is_raw_mode("foo=bar&raw=1"));
+        assert!(is_raw_mode("raw=1&foo=bar"));
+    }
+
+    #[test]
+    fn raw_mode_not_detected_when_absent() {
+        assert!(!is_raw_mode(""));
+        assert!(!is_raw_mode("raw=0"));
+        assert!(!is_raw_mode("foo=bar"));
+        assert!(!is_raw_mode("raw=1x"));
+        assert!(!is_raw_mode("xraw=1"));
+    }
 
     // --- percent_decode ---
 

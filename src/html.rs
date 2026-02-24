@@ -89,6 +89,63 @@ fn collect_heading_text<'a>(node: &'a AstNode<'a>) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Private HTML helpers
+// ---------------------------------------------------------------------------
+
+/// Minimal HTML entity escaping for text content and attribute values.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Inject `id` attributes into heading elements in the rendered HTML fragment.
+///
+/// Performs sequential first-occurrence replacements: `<hN>` → `<hN id="...">`.
+/// Because `render.unsafe_ = false` is set, comrak will never emit bare `<hN>`
+/// tags from raw-HTML inputs in the markdown source, so replacements only hit
+/// genuine heading elements generated from markdown headings.
+fn inject_heading_ids(html: &str, headings: &[HeadingEntry]) -> String {
+    let mut result = html.to_owned();
+    for heading in headings {
+        let tag = format!("<h{}>", heading.level);
+        let with_id = format!("<h{} id=\"{}\">", heading.level, heading.anchor_id);
+        result = result.replacen(&tag, &with_id, 1);
+    }
+    result
+}
+
+/// Build the `<ul>…</ul>` HTML for the TOC sidebar.
+///
+/// Returns an empty string when `headings` is empty (the sidebar will still be
+/// rendered in the page shell but will contain nothing).
+fn build_toc_html(headings: &[HeadingEntry]) -> String {
+    if headings.is_empty() {
+        return String::new();
+    }
+    let mut html = String::from("<ul>\n");
+    for heading in headings {
+        let class = format!("toc-h{}", heading.level);
+        let anchor = heading.anchor_id.as_str();   // anchor_id is already a URL-safe slug
+        let text = html_escape(&heading.text);
+        html.push_str(&format!(
+            "<li class=\"{class}\"><a href=\"#{anchor}\">{text}</a></li>\n",
+        ));
+    }
+    html.push_str("</ul>\n");
+    html
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -160,6 +217,69 @@ pub fn render_markdown(
     );
 
     (html, entries)
+}
+
+/// Build the full HTML page shell: `<!DOCTYPE html>` with header, sticky TOC
+/// sidebar, and rendered content area.
+///
+/// # Parameters
+/// - `body_html`: the raw HTML fragment produced by `render_markdown`.
+/// - `headings`: ordered heading entries for the TOC (from `render_markdown`).
+/// - `file_path`: absolute path to the source `.md` file (for display).
+/// - `serve_root`: root directory of the serve tree (used to compute the
+///   relative display path shown in the header).
+///
+/// # Returns
+/// A complete `text/html` document ready to send to the browser.
+pub fn build_page_shell(
+    body_html: &str,
+    headings: &[HeadingEntry],
+    file_path: &Path,
+    serve_root: &Path,
+) -> String {
+    // Relative path for the header, falling back to the full path.
+    let display_path = file_path
+        .strip_prefix(serve_root)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| file_path.display().to_string());
+
+    // Page title: first H1 text, then file stem, then a safe default.
+    let title_raw = headings
+        .iter()
+        .find(|h| h.level == 1)
+        .map(|h| h.text.as_str())
+        .or_else(|| file_path.file_stem().and_then(|s| s.to_str()))
+        .unwrap_or("Document");
+
+    let title = html_escape(title_raw);
+    let display_path_escaped = html_escape(&display_path);
+    let content_html = inject_heading_ids(body_html, headings);
+    let toc_html = build_toc_html(headings);
+
+    format!(
+        "<!DOCTYPE html>\n\
+<html lang=\"en\">\n\
+<head>\n\
+<meta charset=\"utf-8\">\n\
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+<title>{title}</title>\n\
+<link rel=\"stylesheet\" href=\"/assets/mdmd.css\">\n\
+</head>\n\
+<body>\n\
+<header class=\"site-header\">\n\
+<span class=\"brand\">mdmd serve</span>\n\
+<span class=\"file-path\">{display_path_escaped}</span>\n\
+</header>\n\
+<div class=\"layout\">\n\
+<nav class=\"toc-sidebar\">\n\
+{toc_html}</nav>\n\
+<main class=\"content\">\n\
+{content_html}</main>\n\
+</div>\n\
+<script src=\"/assets/mdmd.js\"></script>\n\
+</body>\n\
+</html>\n"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +435,87 @@ mod tests {
         let (_, h1) = render(input);
         let (_, h2) = render(input);
         assert_eq!(h1, h2, "heading entries must be identical across renders");
+    }
+
+    // --- inject_heading_ids ---
+
+    #[test]
+    fn inject_ids_adds_id_attribute_to_headings() {
+        let html = "<h1>Title</h1>\n<h2>Section</h2>\n";
+        let headings = vec![
+            HeadingEntry { level: 1, text: "Title".into(), anchor_id: "title".into() },
+            HeadingEntry { level: 2, text: "Section".into(), anchor_id: "section".into() },
+        ];
+        let result = inject_heading_ids(html, &headings);
+        assert!(result.contains("<h1 id=\"title\">"), "h1 id injected");
+        assert!(result.contains("<h2 id=\"section\">"), "h2 id injected");
+    }
+
+    #[test]
+    fn inject_ids_processes_in_document_order() {
+        // Two h2 at different slugs — first match is replaced, second on next pass.
+        let html = "<h2>Alpha</h2>\n<h2>Beta</h2>\n";
+        let headings = vec![
+            HeadingEntry { level: 2, text: "Alpha".into(), anchor_id: "alpha".into() },
+            HeadingEntry { level: 2, text: "Beta".into(), anchor_id: "beta".into() },
+        ];
+        let result = inject_heading_ids(html, &headings);
+        assert!(result.contains("<h2 id=\"alpha\">Alpha</h2>"), "first h2 id=alpha");
+        assert!(result.contains("<h2 id=\"beta\">Beta</h2>"), "second h2 id=beta");
+    }
+
+    // --- build_page_shell ---
+
+    #[test]
+    fn page_shell_contains_nav_with_toc() {
+        let input = "# Title\n\n## Section\n";
+        let (html_body, headings) = render(input);
+        let page = build_page_shell(&html_body, &headings, Path::new("/root/doc.md"), Path::new("/root"));
+        assert!(page.contains("<nav class=\"toc-sidebar\">"), "nav element present");
+        assert!(page.contains("href=\"#title\""), "toc link to h1");
+        assert!(page.contains("href=\"#section\""), "toc link to h2");
+    }
+
+    #[test]
+    fn page_shell_contains_script_tag() {
+        let (html_body, headings) = render("# Hi\n");
+        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"));
+        assert!(page.contains("<script src=\"/assets/mdmd.js\">"), "script tag present");
+    }
+
+    #[test]
+    fn page_shell_contains_css_link() {
+        let (html_body, headings) = render("# Hi\n");
+        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"));
+        assert!(page.contains("href=\"/assets/mdmd.css\""), "css link present");
+    }
+
+    #[test]
+    fn page_shell_shows_relative_file_path() {
+        let (html_body, headings) = render("# Hi\n");
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/docs/guide/intro.md"),
+            Path::new("/docs"),
+        );
+        assert!(page.contains("guide/intro.md"), "relative path shown in header");
+    }
+
+    #[test]
+    fn page_shell_heading_ids_injected() {
+        let input = "# Title\n\n## Sub\n";
+        let (html_body, headings) = render(input);
+        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"));
+        assert!(page.contains("<h1 id=\"title\">"), "h1 id injected in content");
+        assert!(page.contains("<h2 id=\"sub\">"), "h2 id injected in content");
+    }
+
+    // --- html_escape ---
+
+    #[test]
+    fn html_escape_handles_special_chars() {
+        assert_eq!(html_escape("<>&\"'"), "&lt;&gt;&amp;&quot;&#39;");
     }
 
     // --- Heading extraction ---

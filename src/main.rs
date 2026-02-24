@@ -2,6 +2,7 @@ mod html;
 mod parse;
 mod render;
 mod serve;
+mod web_assets;
 
 use std::{fs, io, path::{Path, PathBuf}, process};
 
