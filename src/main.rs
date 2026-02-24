@@ -53,7 +53,7 @@ enum Commands {
         /// Path to the markdown file
         file: String,
         /// Interface address to bind to
-        #[arg(long, default_value = "127.0.0.1")]
+        #[arg(long, default_value = "0.0.0.0")]
         bind: String,
         /// Starting port number for the HTTP server
         #[arg(long, default_value = "3333")]

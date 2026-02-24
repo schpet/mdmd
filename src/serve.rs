@@ -540,7 +540,12 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     let norm_display = normalized.display().to_string();
 
     // Step 3: construct candidate.
-    let candidate = state.serve_root.join(&normalized);
+    // When the normalized path is empty (i.e. request for "/"), serve the entry file.
+    let candidate = if normalized == PathBuf::new() {
+        state.entry_file.clone()
+    } else {
+        state.serve_root.join(&normalized)
+    };
 
     // Step 4: fallback resolution.
     let (resolved, branch) = match resolve_candidate(&candidate).await {
