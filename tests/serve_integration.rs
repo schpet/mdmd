@@ -881,3 +881,195 @@ fn test_serve_graceful_shutdown() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// E2E test for directory index rendering policies:
+/// - Root index (`GET /`) lists directory contents.
+/// - Bare directory (`GET /bare-dir/`) with no README.md/index.md renders index.
+/// - Dotfiles are excluded from listings.
+/// - Directories appear before files (dirs-first alphabetical sort).
+/// - Breadcrumb root link is present.
+///
+/// Run with: RUST_LOG=debug cargo test --test serve_integration test_serve_directory_index_policies -- --nocapture
+#[test]
+fn test_serve_directory_index_policies() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_path_buf();
+
+    // Entry file required for server startup.
+    let entry = root.join("README.md");
+    fs::write(&entry, "# Root\n").expect("write root README");
+
+    // A bare directory (no README.md / index.md) → should trigger directory listing.
+    let bare_dir = root.join("bare-dir");
+    fs::create_dir_all(&bare_dir).expect("create bare-dir");
+
+    // Files: mixed-order to validate alphabetical sort within files group.
+    fs::write(bare_dir.join("zzz-file.txt"), "zzz").expect("write zzz-file.txt");
+    fs::write(bare_dir.join("aaa-file.md"), "# aaa").expect("write aaa-file.md");
+
+    // Subdirectory: must appear before files in listing.
+    fs::create_dir_all(bare_dir.join("bbb-subdir")).expect("create bbb-subdir");
+
+    // Dotfile: must be excluded from listing.
+    fs::write(bare_dir.join(".hidden-file"), "hidden").expect("write .hidden-file");
+
+    let fixture = Fixture {
+        _tmp: tmp,
+        root,
+        entry,
+    };
+    let server = ServerHandle::new("test_serve_directory_index_policies", &fixture);
+
+    // --- Root index: GET / always renders directory listing even when README.md exists ---
+    let root_resp = fetch(&client(), &server.url("/"));
+    assert_status(&root_resp, 200);
+    assert_header_contains(&root_resp, "content-type", "text/html");
+    let root_body = root_resp.body_text();
+    assert!(
+        root_body.contains("Index of /"),
+        "root index header missing\n{}",
+        root_resp.context()
+    );
+    assert!(
+        root_body.contains("README.md") || root_body.contains("bare-dir"),
+        "root index missing fixture entries\n{}",
+        root_resp.context()
+    );
+    // Root breadcrumb link must be present.
+    assert!(
+        root_body.contains("href=\"/\""),
+        "root breadcrumb link missing\n{}",
+        root_resp.context()
+    );
+    // README.md raw markdown source must NOT be served for GET /.
+    assert!(
+        !root_body.contains("# Root"),
+        "GET / must not serve raw markdown\n{}",
+        root_resp.context()
+    );
+
+    // --- Bare directory: GET /bare-dir/ renders directory listing ---
+    let dir_resp = fetch(&client(), &server.url("/bare-dir/"));
+    assert_status(&dir_resp, 200);
+    assert_header_contains(&dir_resp, "content-type", "text/html");
+    let dir_body = dir_resp.body_text();
+
+    // Must show directory index header with the directory path.
+    assert!(
+        dir_body.contains("Index of /bare-dir"),
+        "directory index header missing\n{}",
+        dir_resp.context()
+    );
+
+    // Visible files and dirs must be present.
+    assert!(
+        dir_body.contains("bbb-subdir"),
+        "bbb-subdir missing from listing\n{}",
+        dir_resp.context()
+    );
+    assert!(
+        dir_body.contains("aaa-file.md"),
+        "aaa-file.md missing from listing\n{}",
+        dir_resp.context()
+    );
+    assert!(
+        dir_body.contains("zzz-file.txt"),
+        "zzz-file.txt missing from listing\n{}",
+        dir_resp.context()
+    );
+
+    // Dotfile must be excluded.
+    assert!(
+        !dir_body.contains(".hidden-file"),
+        "dotfile must be excluded from listing\n{}",
+        dir_resp.context()
+    );
+
+    // Directories must appear before files (dirs-first policy).
+    let pos_subdir = dir_body
+        .find("bbb-subdir")
+        .expect("bbb-subdir not found in body");
+    let pos_file = dir_body
+        .find("aaa-file.md")
+        .expect("aaa-file.md not found in body");
+    assert!(
+        pos_subdir < pos_file,
+        "directories must appear before files (bbb-subdir should precede aaa-file.md)\n{}",
+        dir_resp.context()
+    );
+
+    // Files must be alphabetically sorted within the files group.
+    let pos_aaa = dir_body
+        .find("aaa-file.md")
+        .expect("aaa-file.md not found in body");
+    let pos_zzz = dir_body
+        .find("zzz-file.txt")
+        .expect("zzz-file.txt not found in body");
+    assert!(
+        pos_aaa < pos_zzz,
+        "files must be alphabetically sorted (aaa-file.md before zzz-file.txt)\n{}",
+        dir_resp.context()
+    );
+
+    // Breadcrumb root link must be present.
+    assert!(
+        dir_body.contains("href=\"/\""),
+        "breadcrumb root link missing\n{}",
+        dir_resp.context()
+    );
+}
+
+/// Verify that an in-root symlink is included while an out-of-root symlink is
+/// excluded from directory listings.
+#[cfg(unix)]
+#[test]
+fn test_serve_directory_index_symlink_policy() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_path_buf();
+
+    let entry = root.join("README.md");
+    fs::write(&entry, "# Root\n").expect("write root README");
+
+    let sym_dir = root.join("sym-test");
+    fs::create_dir_all(&sym_dir).expect("create sym-test");
+
+    // Safe target: inside the serve root.
+    let safe_target = root.join("safe-target.txt");
+    fs::write(&safe_target, "safe").expect("write safe target");
+    symlink(&safe_target, sym_dir.join("safe-link.txt")).expect("create in-root symlink");
+
+    // Dangerous target: outside the serve root.
+    let outside = std::env::temp_dir()
+        .join(format!("mdmd_outside_symtest_{}.txt", std::process::id()));
+    fs::write(&outside, "secret").expect("write outside file");
+    symlink(&outside, sym_dir.join("escape-link.txt")).expect("create out-of-root symlink");
+
+    let fixture = Fixture {
+        _tmp: tmp,
+        root,
+        entry,
+    };
+    let server = ServerHandle::new("test_serve_directory_index_symlink_policy", &fixture);
+
+    let resp = fetch(&client(), &server.url("/sym-test/"));
+    assert_status(&resp, 200);
+    let body = resp.body_text();
+
+    // In-root symlink should be included.
+    assert!(
+        body.contains("safe-link.txt"),
+        "in-root symlink must be included in listing\n{}",
+        resp.context()
+    );
+
+    // Out-of-root symlink must be excluded.
+    assert!(
+        !body.contains("escape-link.txt"),
+        "out-of-root symlink must be excluded from listing\n{}",
+        resp.context()
+    );
+
+    let _ = fs::remove_file(&outside);
+}

@@ -454,57 +454,167 @@ fn is_raw_mode(query: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Directory listing helpers
+// ---------------------------------------------------------------------------
+
+/// Apply listing policy to a flat list of `(name, is_dir)` directory entries.
+///
+/// Policy:
+/// - Exclude entries whose name starts with `'.'` (hidden / dotfiles).
+/// - Sort: directories first (case-insensitive alphabetical), then files
+///   (case-insensitive alphabetical) within each group.
+///
+/// Symlink containment is handled by the async caller before adding entries
+/// to this list.  This function is pure and testable without I/O.
+pub fn apply_dir_listing_policy(entries: Vec<(String, bool)>) -> Vec<(String, bool)> {
+    let mut filtered: Vec<(String, bool)> = entries
+        .into_iter()
+        .filter(|(name, _)| !name.starts_with('.'))
+        .collect();
+
+    filtered.sort_by(|(a_name, a_dir), (b_name, b_dir)| {
+        match (a_dir, b_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a_name.to_lowercase().cmp(&b_name.to_lowercase()),
+        }
+    });
+
+    filtered
+}
+
+/// Build an HTML breadcrumb navigation string from a URL prefix.
+///
+/// `url_prefix` is either `"/"` (root) or an absolute path like `"/docs/guide"`.
+/// Each path segment is percent-encoded in the `href` and displayed as-is.
+/// The root segment always links to `"/"`.
+fn build_breadcrumbs(url_prefix: &str) -> String {
+    let segments: Vec<&str> = url_prefix
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let mut html = String::from("<a href=\"/\">/</a>");
+
+    let mut href = String::new();
+    for seg in &segments {
+        href.push('/');
+        href.push_str(&percent_encode_segment(seg));
+        html.push_str(&format!(" / <a href=\"{href}/\">{seg}</a>"));
+    }
+
+    html
+}
+
+// ---------------------------------------------------------------------------
 // Directory index renderer
 // ---------------------------------------------------------------------------
 
-/// Render a minimal HTML directory listing for `dir` at URL path `url_path`.
+/// Render an HTML directory listing for `dir_path` at URL path `url_prefix`.
 ///
-/// Lists direct children of `dir` as clickable links, sorted lexicographically.
+/// Listing policy (enforced):
+/// - Hidden entries (names starting with `'.'`) are excluded.
+/// - Symlinks are included only when their canonicalized target is inside
+///   `state.canonical_root`; out-of-root symlinks are silently omitted.
+/// - Sorted: directories first (case-insensitive alpha), then files
+///   (case-insensitive alpha).
+/// - Each entry's href is built by percent-encoding the name individually
+///   and appending it to the base URL.  Directory entries get a trailing `"/"`.
+/// - A breadcrumb navigation bar is rendered above the listing.
+///
 /// Returns a 404 when the directory cannot be read.
-async fn render_directory_index_response(_state: &AppState, dir: &Path, url_path: &str) -> Response {
-    let mut rd = match tokio::fs::read_dir(dir).await {
+async fn render_directory_index_response(
+    state: &AppState,
+    dir_path: &Path,
+    url_prefix: &str,
+) -> Response {
+    let mut rd = match tokio::fs::read_dir(dir_path).await {
         Ok(rd) => rd,
         Err(e) => {
             eprintln!(
                 "[dir-index] cannot read dir={} err={e}",
-                dir.display()
+                dir_path.display()
             );
             return not_found_response();
         }
     };
 
-    let mut names: Vec<String> = Vec::new();
+    let mut raw_entries: Vec<(String, bool)> = Vec::new();
     loop {
         match rd.next_entry().await {
             Ok(Some(entry)) => {
-                if let Some(name) = entry.file_name().to_str().map(|s| s.to_owned()) {
-                    names.push(name);
+                let name = match entry.file_name().to_str().map(|s| s.to_owned()) {
+                    Some(n) => n,
+                    None => continue,
+                };
+
+                // Skip dotfiles — handled by apply_dir_listing_policy, but we also
+                // skip here to avoid unnecessary canonicalize calls.
+                if name.starts_with('.') {
+                    continue;
                 }
+
+                let entry_path = entry.path();
+
+                // Symlink containment: only include symlinks whose target lies
+                // within canonical_root.
+                let file_type = match entry.file_type().await {
+                    Ok(ft) => ft,
+                    Err(_) => continue,
+                };
+                if file_type.is_symlink() {
+                    match tokio::fs::canonicalize(&entry_path).await {
+                        Ok(target) if target.starts_with(&state.canonical_root) => {}
+                        _ => {
+                            eprintln!(
+                                "[dir-index] omit out-of-root symlink name={name} dir={}",
+                                dir_path.display()
+                            );
+                            continue;
+                        }
+                    }
+                }
+
+                // Determine if the entry is a directory (follows symlinks).
+                let is_dir = match tokio::fs::metadata(&entry_path).await {
+                    Ok(m) => m.is_dir(),
+                    Err(_) => continue,
+                };
+
+                raw_entries.push((name, is_dir));
             }
             Ok(None) => break,
             Err(_) => break,
         }
     }
-    names.sort();
 
-    // Base href for child links: always ends with '/'.
-    let base = if url_path.ends_with('/') {
-        url_path.to_owned()
+    // Apply sort and filter policy.
+    let entries = apply_dir_listing_policy(raw_entries);
+
+    // Build breadcrumbs and base href.
+    let breadcrumbs = build_breadcrumbs(url_prefix);
+    let base = if url_prefix.ends_with('/') {
+        url_prefix.to_owned()
     } else {
-        format!("{}/", url_path)
+        format!("{url_prefix}/")
     };
 
     let mut body = format!(
-        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Index of {url_path}</title></head><body><h1>Index of {url_path}</h1><ul>"
+        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Index of {url_prefix}</title></head><body><nav>{breadcrumbs}</nav><h1>Index of {url_prefix}</h1><ul>"
     );
-    for name in &names {
-        let href = format!("{base}{}", percent_encode_segment(name));
+    for (name, is_dir) in &entries {
+        let encoded = percent_encode_segment(name);
+        let href = if *is_dir {
+            format!("{base}{encoded}/")
+        } else {
+            format!("{base}{encoded}")
+        };
         body.push_str(&format!("<li><a href=\"{href}\">{name}</a></li>"));
     }
     body.push_str("</ul></body></html>");
 
     let etag = compute_etag(body.as_bytes());
-    eprintln!("[dir-index] path={url_path} entries={}", names.len());
+    eprintln!("[dir-index] path={url_prefix} entries={}", entries.len());
 
     Response::builder()
         .status(StatusCode::OK)
@@ -673,6 +783,19 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     let (resolved, branch) = match resolve_candidate(&candidate).await {
         Some(r) => r,
         None => {
+            // If the candidate is a directory with no markdown index file,
+            // render a browsable directory listing instead of returning 404.
+            if let Ok(meta) = tokio::fs::metadata(&candidate).await {
+                if meta.is_dir() {
+                    let url_prefix = format!("/{norm_display}");
+                    eprintln!(
+                        "[resolve] path={norm_display} branch=dir-index dir={}",
+                        candidate.display()
+                    );
+                    return render_directory_index_response(&*state, &candidate, &url_prefix)
+                        .await;
+                }
+            }
             eprintln!("[resolve] path={norm_display} branch=denied reason=not-found");
             return not_found_response();
         }
@@ -1359,6 +1482,106 @@ mod tests {
         let _ = std::fs::remove_file(&link);
         let _ = std::fs::remove_file(&outside);
         let _ = std::fs::remove_dir(&base);
+    }
+
+    // --- apply_dir_listing_policy ---
+
+    #[test]
+    fn listing_policy_excludes_dotfiles() {
+        let entries = vec![
+            (".hidden".to_owned(), false),
+            ("visible.md".to_owned(), false),
+            (".git".to_owned(), true),
+        ];
+        let result = apply_dir_listing_policy(entries);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "visible.md");
+    }
+
+    #[test]
+    fn listing_policy_dirs_before_files() {
+        let entries = vec![
+            ("zzz-file.txt".to_owned(), false),
+            ("aaa-file.md".to_owned(), false),
+            ("bbb-dir".to_owned(), true),
+            ("aaa-dir".to_owned(), true),
+        ];
+        let result = apply_dir_listing_policy(entries);
+        // Directories first (alphabetical), then files (alphabetical).
+        assert_eq!(result[0], ("aaa-dir".to_owned(), true));
+        assert_eq!(result[1], ("bbb-dir".to_owned(), true));
+        assert_eq!(result[2], ("aaa-file.md".to_owned(), false));
+        assert_eq!(result[3], ("zzz-file.txt".to_owned(), false));
+    }
+
+    #[test]
+    fn listing_policy_case_insensitive_sort() {
+        let entries = vec![
+            ("Zebra.md".to_owned(), false),
+            ("apple.md".to_owned(), false),
+            ("Mango.md".to_owned(), false),
+        ];
+        let result = apply_dir_listing_policy(entries);
+        // Case-insensitive: apple < Mango < Zebra
+        assert_eq!(result[0].0, "apple.md");
+        assert_eq!(result[1].0, "Mango.md");
+        assert_eq!(result[2].0, "Zebra.md");
+    }
+
+    #[test]
+    fn listing_policy_empty_input() {
+        let result = apply_dir_listing_policy(vec![]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn listing_policy_only_dotfiles_filtered_out() {
+        let entries = vec![
+            (".env".to_owned(), false),
+            (".gitignore".to_owned(), false),
+        ];
+        let result = apply_dir_listing_policy(entries);
+        assert!(result.is_empty());
+    }
+
+    // --- build_breadcrumbs ---
+
+    #[test]
+    fn breadcrumbs_root_only() {
+        let html = build_breadcrumbs("/");
+        assert!(html.contains("href=\"/\""), "root link missing: {html}");
+        // Only the root link, no extra segments.
+        assert_eq!(html.matches("<a href=").count(), 1);
+    }
+
+    #[test]
+    fn breadcrumbs_one_segment() {
+        let html = build_breadcrumbs("/docs");
+        assert!(html.contains("href=\"/\""), "root link missing: {html}");
+        assert!(html.contains("href=\"/docs/\""), "docs link missing: {html}");
+        assert!(html.contains(">docs<"), "docs text missing: {html}");
+    }
+
+    #[test]
+    fn breadcrumbs_two_segments() {
+        let html = build_breadcrumbs("/docs/guide");
+        assert!(html.contains("href=\"/\""), "root link missing: {html}");
+        assert!(html.contains("href=\"/docs/\""), "docs link missing: {html}");
+        assert!(html.contains("href=\"/docs/guide/\""), "guide link missing: {html}");
+        assert!(html.contains(">guide<"), "guide text missing: {html}");
+    }
+
+    #[test]
+    fn breadcrumbs_encodes_special_chars() {
+        let html = build_breadcrumbs("/my docs/sub dir");
+        assert!(
+            html.contains("href=\"/my%20docs/\""),
+            "space encoding missing: {html}"
+        );
+        assert!(
+            html.contains("href=\"/my%20docs/sub%20dir/\""),
+            "nested space encoding missing: {html}"
+        );
     }
 
     // --- resolve_candidate (async, requires real files) ---
