@@ -2,6 +2,7 @@ use std::io;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use axum::{
     body::Body,
@@ -11,6 +12,7 @@ use axum::{
     Router,
 };
 use tokio::signal;
+use tower_http::compression::CompressionLayer;
 
 use crate::html;
 use crate::web_assets;
@@ -91,6 +93,95 @@ pub struct AppState {
     pub entry_file: PathBuf,
     /// Server configuration.
     pub config: AppConfig,
+    /// Precomputed strong ETag for the embedded CSS asset (`/assets/mdmd.css`).
+    pub css_etag: String,
+    /// Precomputed strong ETag for the embedded JS asset (`/assets/mdmd.js`).
+    pub js_etag: String,
+    /// `Last-Modified` timestamp for embedded static assets, derived from the
+    /// binary's own modification time.  Falls back to the Unix epoch.
+    pub asset_mtime: SystemTime,
+}
+
+// ---------------------------------------------------------------------------
+// Cache validation helpers
+// ---------------------------------------------------------------------------
+
+/// Compute a 64-bit FNV-1a hash of `data`.
+///
+/// FNV-1a is used here for its speed — it is suitable for cache-validation
+/// ETags but NOT for any cryptographic purpose.  Algorithm:
+///   hash = offset_basis
+///   for each byte: hash ^= byte; hash *= FNV_prime
+/// with `offset_basis` = 14695981039346656037 and `FNV_prime` = 1099511628211
+/// (the standard 64-bit FNV-1a constants).
+///
+/// To change the hash algorithm, replace only this function and update the
+/// comment above — all callers go through `compute_etag`.
+pub fn fnv1a_64(data: &[u8]) -> u64 {
+    // 64-bit FNV-1a constants from the FNV specification.
+    const FNV_PRIME: u64 = 1099511628211;
+    const FNV_OFFSET_BASIS: u64 = 14695981039346656037;
+    let mut hash = FNV_OFFSET_BASIS;
+    for &byte in data {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Format `data` as a strong HTTP ETag: a quoted 16-char hex string.
+///
+/// Returns a value of the form `"<16 hex chars>"` (strong ETag, RFC 7232 §2.3).
+pub fn compute_etag(data: &[u8]) -> String {
+    format!("\"{:016x}\"", fnv1a_64(data))
+}
+
+/// Format a `SystemTime` as an RFC 7231 HTTP-date string
+/// (e.g. `"Mon, 02 Jan 2006 15:04:05 GMT"`).
+///
+/// Returns `None` if `t` is before the Unix epoch.
+pub fn format_http_date(t: SystemTime) -> Option<String> {
+    Some(httpdate::fmt_http_date(t))
+}
+
+/// Parse an RFC 7231 HTTP-date string into a `SystemTime`.
+///
+/// Returns `None` on any parse failure.
+pub fn parse_http_date(s: &str) -> Option<SystemTime> {
+    httpdate::parse_http_date(s).ok()
+}
+
+/// Return `true` when the conditional `If-None-Match` header indicates the
+/// response has not changed.
+///
+/// Matches `*` (any representation) or any ETag in the comma-separated list
+/// that equals `etag`.
+pub fn etag_matches(if_none_match: &str, etag: &str) -> bool {
+    let trimmed = if_none_match.trim();
+    if trimmed == "*" {
+        return true;
+    }
+    trimmed.split(',').any(|e| e.trim() == etag)
+}
+
+/// Return `true` when the `If-Modified-Since` condition means the resource
+/// should be returned as 304 (i.e. it has NOT been modified since `ims_header`).
+///
+/// Per RFC 7232 §3.3: the condition is true (304 appropriate) when
+/// `mtime` is no later than the parsed date.  Returns `false` on parse failure
+/// so the request falls through to a normal 200 response.
+pub fn not_modified_since(ims_header: &str, mtime: SystemTime) -> bool {
+    match parse_http_date(ims_header) {
+        Some(req_time) => {
+            // Truncate mtime to whole seconds (HTTP dates have 1-second resolution).
+            let mtime_secs = mtime
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(d.as_secs()))
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            mtime_secs <= req_time
+        }
+        None => false,
+    }
 }
 
 /// Attempt to bind a TCP listener on `bind_addr` starting at `start_port`.
@@ -266,6 +357,16 @@ async fn resolve_candidate(candidate: &Path) -> Option<(PathBuf, &'static str)> 
 // Response helpers
 // ---------------------------------------------------------------------------
 
+/// 304 Not Modified response with `ETag` and `Last-Modified` headers preserved.
+fn not_modified_response(etag: &str, last_modified: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::NOT_MODIFIED)
+        .header(header::ETAG, etag)
+        .header(header::LAST_MODIFIED, last_modified)
+        .body(Body::empty())
+        .expect("not_modified_response builder is infallible")
+}
+
 /// 404 Not Found with mandatory security headers.
 fn not_found_response() -> Response {
     Response::builder()
@@ -302,7 +403,9 @@ fn is_raw_mode(query: &str) -> bool {
 // Axum request handler
 // ---------------------------------------------------------------------------
 
-/// Main request handler: implements the 7-step secure path resolution pipeline.
+/// Main request handler: implements the 7-step secure path resolution pipeline
+/// plus cache validation (ETag / Last-Modified) and conditional-request (304)
+/// handling.
 ///
 /// Steps:
 /// 0. Early-exit: `/assets/mdmd.css` and `/assets/mdmd.js` are served from
@@ -316,27 +419,96 @@ fn is_raw_mode(query: &str) -> bool {
 /// 7. Dispatch: `.md` files are rendered as HTML (or returned as `text/plain` when
 ///    `?raw=1` is present); all other files are served as static assets.
 ///
-/// All responses include `X-Content-Type-Options: nosniff` (R6).
+/// All 200 responses include `ETag`, `Last-Modified`, and
+/// `X-Content-Type-Options: nosniff` headers.  Conditional requests
+/// (`If-None-Match`, `If-Modified-Since`) are evaluated and may produce a
+/// 304 Not Modified response with no body.
 async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Response {
     let raw_path = req.uri().path().to_owned();
     let query = req.uri().query().unwrap_or("").to_owned();
 
+    // Extract conditional request headers once, before any branching.
+    let if_none_match = req
+        .headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let if_modified_since = req
+        .headers()
+        .get(header::IF_MODIFIED_SINCE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
+    // Log approximate compression encoding from Accept-Encoding header.
+    let accept_encoding = req
+        .headers()
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let compression_enc = if accept_encoding.contains("br") {
+        "br"
+    } else if accept_encoding.contains("gzip") {
+        "gzip"
+    } else {
+        "none"
+    };
+    eprintln!("[compression] encoding={compression_enc}");
+
     // Step 0: serve embedded static assets early — no filesystem access needed.
     if raw_path == "/assets/mdmd.css" {
+        let etag = &state.css_etag;
+        let last_modified = format_http_date(state.asset_mtime)
+            .unwrap_or_else(|| "Thu, 01 Jan 1970 00:00:00 GMT".to_owned());
+
+        // Evaluate If-None-Match first (RFC 7232 §6 preference order).
+        if let Some(ref inm) = if_none_match {
+            if etag_matches(inm, etag) {
+                eprintln!("[cache] path={raw_path} etag={etag} status=304");
+                return not_modified_response(etag, &last_modified);
+            }
+        } else if let Some(ref ims) = if_modified_since {
+            if not_modified_since(ims, state.asset_mtime) {
+                eprintln!("[cache] path={raw_path} etag={etag} status=304");
+                return not_modified_response(etag, &last_modified);
+            }
+        }
+
+        eprintln!("[cache] path={raw_path} etag={etag} status=200");
         eprintln!("[request] path={raw_path} mode=asset");
         return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "text/css; charset=utf-8")
             .header("X-Content-Type-Options", "nosniff")
+            .header(header::ETAG, etag.as_str())
+            .header(header::LAST_MODIFIED, last_modified)
             .body(Body::from(web_assets::CSS))
             .expect("css asset response builder is infallible");
     }
     if raw_path == "/assets/mdmd.js" {
+        let etag = &state.js_etag;
+        let last_modified = format_http_date(state.asset_mtime)
+            .unwrap_or_else(|| "Thu, 01 Jan 1970 00:00:00 GMT".to_owned());
+
+        if let Some(ref inm) = if_none_match {
+            if etag_matches(inm, etag) {
+                eprintln!("[cache] path={raw_path} etag={etag} status=304");
+                return not_modified_response(etag, &last_modified);
+            }
+        } else if let Some(ref ims) = if_modified_since {
+            if not_modified_since(ims, state.asset_mtime) {
+                eprintln!("[cache] path={raw_path} etag={etag} status=304");
+                return not_modified_response(etag, &last_modified);
+            }
+        }
+
+        eprintln!("[cache] path={raw_path} etag={etag} status=200");
         eprintln!("[request] path={raw_path} mode=asset");
         return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "text/javascript; charset=utf-8")
             .header("X-Content-Type-Options", "nosniff")
+            .header(header::ETAG, etag.as_str())
+            .header(header::LAST_MODIFIED, last_modified)
             .body(Body::from(web_assets::JS))
             .expect("js asset response builder is infallible");
     }
@@ -398,14 +570,16 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
         return not_found_response();
     }
 
-    // Step 6 (R5): file size guard — stat before reading.
-    let size = match tokio::fs::metadata(&canonical).await {
-        Ok(m) => m.len(),
+    // Step 6 (R5): file size guard — stat before reading; also capture mtime.
+    let file_meta = match tokio::fs::metadata(&canonical).await {
+        Ok(m) => m,
         Err(_) => {
             eprintln!("[resolve] path={norm_display} branch=denied reason=metadata-failed");
             return not_found_response();
         }
     };
+    let size = file_meta.len();
+    let mtime = file_meta.modified().ok();
 
     if size > MAX_FILE_SIZE {
         eprintln!(
@@ -430,11 +604,34 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
 
         // ?raw=1 — return the markdown source as plain text.
         if is_raw_mode(&query) {
+            let body_bytes = content.as_bytes();
+            let etag = compute_etag(body_bytes);
+            let last_modified = mtime
+                .and_then(format_http_date)
+                .unwrap_or_else(|| "Thu, 01 Jan 1970 00:00:00 GMT".to_owned());
+
+            if let Some(ref inm) = if_none_match {
+                if etag_matches(inm, &etag) {
+                    eprintln!("[cache] path={norm_display} etag={etag} status=304");
+                    return not_modified_response(&etag, &last_modified);
+                }
+            } else if let Some(ref ims) = if_modified_since {
+                if let Some(mt) = mtime {
+                    if not_modified_since(ims, mt) {
+                        eprintln!("[cache] path={norm_display} etag={etag} status=304");
+                        return not_modified_response(&etag, &last_modified);
+                    }
+                }
+            }
+
+            eprintln!("[cache] path={norm_display} etag={etag} status=200");
             eprintln!("[request] path={norm_display} mode=raw");
             return Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
                 .header("X-Content-Type-Options", "nosniff")
+                .header(header::ETAG, etag)
+                .header(header::LAST_MODIFIED, last_modified)
                 .body(Body::from(content))
                 .expect("raw mode response builder is infallible");
         }
@@ -448,11 +645,34 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
             &canonical,
             &state.canonical_root,
         );
+
+        let etag = compute_etag(page.as_bytes());
+        let last_modified = mtime
+            .and_then(format_http_date)
+            .unwrap_or_else(|| "Thu, 01 Jan 1970 00:00:00 GMT".to_owned());
+
+        if let Some(ref inm) = if_none_match {
+            if etag_matches(inm, &etag) {
+                eprintln!("[cache] path={norm_display} etag={etag} status=304");
+                return not_modified_response(&etag, &last_modified);
+            }
+        } else if let Some(ref ims) = if_modified_since {
+            if let Some(mt) = mtime {
+                if not_modified_since(ims, mt) {
+                    eprintln!("[cache] path={norm_display} etag={etag} status=304");
+                    return not_modified_response(&etag, &last_modified);
+                }
+            }
+        }
+
+        eprintln!("[cache] path={norm_display} etag={etag} status=200");
         eprintln!("[request] path={norm_display} mode=rendered");
         Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
             .header("X-Content-Type-Options", "nosniff")
+            .header(header::ETAG, etag)
+            .header(header::LAST_MODIFIED, last_modified)
             .body(Body::from(page))
             .expect("serve_handler md response builder is infallible")
     } else {
@@ -461,11 +681,34 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
             Ok(b) => b,
             Err(_) => return not_found_response(),
         };
+
+        let etag = compute_etag(&bytes);
+        let last_modified = mtime
+            .and_then(format_http_date)
+            .unwrap_or_else(|| "Thu, 01 Jan 1970 00:00:00 GMT".to_owned());
+
+        if let Some(ref inm) = if_none_match {
+            if etag_matches(inm, &etag) {
+                eprintln!("[cache] path={norm_display} etag={etag} status=304");
+                return not_modified_response(&etag, &last_modified);
+            }
+        } else if let Some(ref ims) = if_modified_since {
+            if let Some(mt) = mtime {
+                if not_modified_since(ims, mt) {
+                    eprintln!("[cache] path={norm_display} etag={etag} status=304");
+                    return not_modified_response(&etag, &last_modified);
+                }
+            }
+        }
+
+        eprintln!("[cache] path={norm_display} etag={etag} status=200");
         let content_type = mime_for_ext(ext);
         Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, content_type)
             .header("X-Content-Type-Options", "nosniff")
+            .header(header::ETAG, etag)
+            .header(header::LAST_MODIFIED, last_modified)
             .body(Body::from(bytes))
             .expect("serve_handler asset response builder is infallible")
     }
@@ -488,11 +731,27 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
         .unwrap_or_else(|| PathBuf::from("."));
     let canonical_root = std::fs::canonicalize(&serve_root).unwrap_or_else(|_| serve_root.clone());
 
+    // Precompute ETags for embedded static assets (stable for the lifetime of
+    // this server process — embedded bytes never change at runtime).
+    let css_etag = compute_etag(web_assets::CSS.as_bytes());
+    let js_etag = compute_etag(web_assets::JS.as_bytes());
+
+    // Use the binary's own mtime as Last-Modified for embedded assets, falling
+    // back to the Unix epoch when the path or metadata is unavailable.
+    let asset_mtime = std::env::current_exe()
+        .ok()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+
     let state = Arc::new(AppState {
         serve_root,
         canonical_root,
         entry_file,
         config: AppConfig,
+        css_etag,
+        js_etag,
+        asset_mtime,
     });
 
     let (std_listener, bound_port) =
@@ -504,9 +763,13 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
     std_listener.set_nonblocking(true)?;
     let listener = tokio::net::TcpListener::from_std(std_listener)?;
 
+    // CompressionLayer transparently compresses text responses using gzip or
+    // brotli based on the client's Accept-Encoding header.  It is added as the
+    // outermost layer so it wraps all handler responses.
     let app = Router::new()
         .fallback(serve_handler)
-        .with_state(state);
+        .with_state(state)
+        .layer(CompressionLayer::new());
 
     eprintln!("[serve] listening on {}:{}", bind_addr, bound_port);
 

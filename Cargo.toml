@@ -9,11 +9,13 @@ axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 comrak = { version = "=0.35.0", default-features = false }
 crossterm = "0.29"
+httpdate = "1"
 pulldown-cmark = "0.12"
 ratatui = "0.30"
 serde_json = "1"
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros", "fs"] }
+tower-http = { version = "0.6", features = ["compression-gzip", "compression-br"] }
 
 [profile.release]
 codegen-units = 1
