@@ -368,7 +368,7 @@ fn test_serve_basic_html() {
     let fixture = Fixture::new(FixtureOptions::default());
     let server = ServerHandle::new("test_serve_basic_html", &fixture);
 
-    let resp = fetch(&client(), &server.url("/"));
+    let resp = fetch(&client(), &server.url("/README.md"));
     assert_status(&resp, 200);
     assert_header_contains(&resp, "content-type", "text/html");
 }
@@ -378,7 +378,7 @@ fn test_serve_toc_present() {
     let fixture = Fixture::new(FixtureOptions::default());
     let server = ServerHandle::new("test_serve_toc_present", &fixture);
 
-    let resp = fetch(&client(), &server.url("/"));
+    let resp = fetch(&client(), &server.url("/README.md"));
     assert_status(&resp, 200);
     let body = resp.body_text();
     assert!(
@@ -393,7 +393,7 @@ fn test_serve_raw_mode() {
     let fixture = Fixture::new(FixtureOptions::default());
     let server = ServerHandle::new("test_serve_raw_mode", &fixture);
 
-    let resp = fetch(&client(), &server.url("/?raw=1"));
+    let resp = fetch(&client(), &server.url("/README.md?raw=1"));
     assert_status(&resp, 200);
     assert_header_contains(&resp, "content-type", "text/plain");
     assert!(
@@ -408,7 +408,7 @@ fn test_serve_table_rendered() {
     let fixture = Fixture::new(FixtureOptions::default());
     let server = ServerHandle::new("test_serve_table_rendered", &fixture);
 
-    let resp = fetch(&client(), &server.url("/"));
+    let resp = fetch(&client(), &server.url("/README.md"));
     assert_status(&resp, 200);
     assert!(
         resp.body_text().contains("<table>"),
@@ -422,7 +422,7 @@ fn test_serve_task_list_rendered() {
     let fixture = Fixture::new(FixtureOptions::default());
     let server = ServerHandle::new("test_serve_task_list_rendered", &fixture);
 
-    let resp = fetch(&client(), &server.url("/"));
+    let resp = fetch(&client(), &server.url("/README.md"));
     assert_status(&resp, 200);
     assert!(
         resp.body_text().contains("<input") && resp.body_text().contains("checkbox"),
@@ -436,7 +436,7 @@ fn test_serve_mermaid_placeholder() {
     let fixture = Fixture::new(FixtureOptions::default());
     let server = ServerHandle::new("test_serve_mermaid_placeholder", &fixture);
 
-    let resp = fetch(&client(), &server.url("/"));
+    let resp = fetch(&client(), &server.url("/README.md"));
     assert_status(&resp, 200);
     assert!(
         resp.body_text().contains("class=\"mermaid\""),
@@ -450,12 +450,41 @@ fn test_serve_mermaid_cdn_script() {
     let fixture = Fixture::new(FixtureOptions::default());
     let server = ServerHandle::new("test_serve_mermaid_cdn_script", &fixture);
 
-    let resp = fetch(&client(), &server.url("/"));
+    let resp = fetch(&client(), &server.url("/README.md"));
     assert_status(&resp, 200);
     assert!(
         resp.body_text()
             .contains("https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js"),
         "pinned mermaid CDN script missing\n{}",
+        resp.context()
+    );
+}
+
+#[test]
+fn test_serve_root_index() {
+    let fixture = Fixture::new(FixtureOptions::default());
+    let server = ServerHandle::new("test_serve_root_index", &fixture);
+
+    let resp = fetch(&client(), &server.url("/"));
+    assert_status(&resp, 200);
+    assert_header_contains(&resp, "content-type", "text/html");
+    let body = resp.body_text();
+    // Must render a directory index, not entry markdown content.
+    assert!(
+        body.contains("Index of /"),
+        "root index missing listing header\n{}",
+        resp.context()
+    );
+    // At least one fixture root file must appear in the listing.
+    assert!(
+        body.contains("README.md") || body.contains("guide.md"),
+        "root index missing fixture file entries\n{}",
+        resp.context()
+    );
+    // Must NOT serve the raw markdown source as the page.
+    assert!(
+        !body.contains("# Home"),
+        "GET / must not serve raw markdown source\n{}",
         resp.context()
     );
 }
@@ -764,6 +793,10 @@ fn test_serve_startup_stdout_format() {
         .iter()
         .position(|l| l.starts_with("url:   http://"))
         .unwrap_or_else(|| panic!("missing url line\nstdout:\n{stdout}"));
+    let index_idx = lines
+        .iter()
+        .position(|l| l.starts_with("index: http://"))
+        .unwrap_or_else(|| panic!("missing index line\nstdout:\n{stdout}"));
 
     assert!(
         root_idx > 0,
@@ -776,6 +809,10 @@ fn test_serve_startup_stdout_format() {
     assert!(
         url_idx > entry_idx,
         "url line must appear after entry line\nstdout:\n{stdout}"
+    );
+    assert!(
+        index_idx > entry_idx,
+        "index line must appear after entry line\nstdout:\n{stdout}"
     );
 }
 

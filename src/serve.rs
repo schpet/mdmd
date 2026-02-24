@@ -454,6 +454,68 @@ fn is_raw_mode(query: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Directory index renderer
+// ---------------------------------------------------------------------------
+
+/// Render a minimal HTML directory listing for `dir` at URL path `url_path`.
+///
+/// Lists direct children of `dir` as clickable links, sorted lexicographically.
+/// Returns a 404 when the directory cannot be read.
+async fn render_directory_index_response(_state: &AppState, dir: &Path, url_path: &str) -> Response {
+    let mut rd = match tokio::fs::read_dir(dir).await {
+        Ok(rd) => rd,
+        Err(e) => {
+            eprintln!(
+                "[dir-index] cannot read dir={} err={e}",
+                dir.display()
+            );
+            return not_found_response();
+        }
+    };
+
+    let mut names: Vec<String> = Vec::new();
+    loop {
+        match rd.next_entry().await {
+            Ok(Some(entry)) => {
+                if let Some(name) = entry.file_name().to_str().map(|s| s.to_owned()) {
+                    names.push(name);
+                }
+            }
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+    names.sort();
+
+    // Base href for child links: always ends with '/'.
+    let base = if url_path.ends_with('/') {
+        url_path.to_owned()
+    } else {
+        format!("{}/", url_path)
+    };
+
+    let mut body = format!(
+        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Index of {url_path}</title></head><body><h1>Index of {url_path}</h1><ul>"
+    );
+    for name in &names {
+        let href = format!("{base}{}", percent_encode_segment(name));
+        body.push_str(&format!("<li><a href=\"{href}\">{name}</a></li>"));
+    }
+    body.push_str("</ul></body></html>");
+
+    let etag = compute_etag(body.as_bytes());
+    eprintln!("[dir-index] path={url_path} entries={}", names.len());
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header("X-Content-Type-Options", "nosniff")
+        .header(header::ETAG, etag)
+        .body(Body::from(body))
+        .expect("dir index response builder is infallible")
+}
+
+// ---------------------------------------------------------------------------
 // Axum request handler
 // ---------------------------------------------------------------------------
 
@@ -593,13 +655,19 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
 
     let norm_display = normalized.display().to_string();
 
-    // Step 3: construct candidate.
-    // When the normalized path is empty (i.e. request for "/"), serve the entry file.
-    let candidate = if normalized == PathBuf::new() {
-        state.entry_file.clone()
-    } else {
-        state.serve_root.join(&normalized)
-    };
+    // Step 3: early-exit for root "/" → render root directory index directly,
+    // bypassing resolve_candidate() entirely.  This ensures GET / always shows
+    // a browsable listing even when README.md exists at the project root.
+    if normalized == PathBuf::new() {
+        eprintln!(
+            "[resolve] path=/ branch=dir-index dir={}",
+            state.canonical_root.display()
+        );
+        return render_directory_index_response(&*state, &state.canonical_root, "/").await;
+    }
+
+    // Non-root paths: construct candidate relative to serve_root.
+    let candidate = state.serve_root.join(&normalized);
 
     // Step 4: fallback resolution.
     let (resolved, branch) = match resolve_candidate(&candidate).await {
