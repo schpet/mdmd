@@ -7,6 +7,7 @@ description = "A TUI markdown viewer and navigator"
 [dependencies]
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
+comrak = { version = "=0.35.0", default-features = false }
 crossterm = "0.29"
 pulldown-cmark = "0.12"
 ratatui = "0.30"

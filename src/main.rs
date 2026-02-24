@@ -1,3 +1,4 @@
+mod html;
 mod parse;
 mod render;
 mod serve;
