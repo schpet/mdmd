@@ -1,5 +1,6 @@
 mod parse;
 mod render;
+mod serve;
 
 use std::{fs, io, path::{Path, PathBuf}, process};
 
@@ -212,10 +213,11 @@ fn main() -> io::Result<()> {
             run_tui_file(&file)
         }
         DispatchMode::Serve { file, bind, port } => {
-            eprintln!("[serve] Web server dispatched for: {file} on {bind}:{port}");
-            // Web server bootstrap is implemented in bd-1mz.
-            eprintln!("Error: serve mode not yet implemented.");
-            process::exit(1);
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            rt.block_on(serve::run_serve(file, bind, port))
         }
     }
 }
