@@ -145,6 +145,49 @@ fn build_toc_html(headings: &[HeadingEntry]) -> String {
     html
 }
 
+/// Returns true when a fenced code block info string denotes Mermaid.
+///
+/// Matching is case-insensitive and based on the first whitespace-delimited
+/// token of the info string (for example, `mermaid` in `mermaid title=...`).
+fn is_mermaid_info(info: &str) -> bool {
+    info
+        .split_whitespace()
+        .next()
+        .map(|lang| lang.eq_ignore_ascii_case("mermaid"))
+        .unwrap_or(false)
+}
+
+/// Rewrite Mermaid fenced code blocks into SSR placeholders:
+/// `<pre class="mermaid">...</pre>`.
+///
+/// Mermaid source is HTML-escaped before insertion so diagram text is never
+/// injected as raw HTML.
+fn rewrite_mermaid_code_blocks<'a>(root: &'a AstNode<'a>) -> usize {
+    let mut rewritten = 0usize;
+
+    for node in root.descendants() {
+        let replacement = {
+            let data = node.data.borrow();
+            match &data.value {
+                NodeValue::CodeBlock(ncb) if ncb.fenced && is_mermaid_info(&ncb.info) => {
+                    Some(format!(
+                        "<pre class=\"mermaid\">{}</pre>\n",
+                        html_escape(&ncb.literal)
+                    ))
+                }
+                _ => None,
+            }
+        };
+
+        if let Some(raw_html) = replacement {
+            node.data.borrow_mut().value = NodeValue::Raw(raw_html);
+            rewritten += 1;
+        }
+    }
+
+    rewritten
+}
+
 // ---------------------------------------------------------------------------
 // Local link rewriting (bd-1p6)
 // ---------------------------------------------------------------------------
@@ -291,6 +334,14 @@ pub fn render_markdown(
     let options = make_options();
     let root = parse_document(&arena, input, &options);
 
+    // --- Mermaid fenced blocks: SSR placeholders for client hydration (bd-2se) ---
+    let mermaid_rewritten = rewrite_mermaid_code_blocks(root);
+    eprintln!(
+        "[mermaid] file={} rewritten={}",
+        file_path.display(),
+        mermaid_rewritten
+    );
+
     // --- Rewrite local relative links to root-relative hrefs (bd-1p6) ---
     let (rewritten, skipped) = rewrite_local_links(root, file_path, serve_root);
     eprintln!(
@@ -385,6 +436,12 @@ pub fn build_page_shell(
     let content_html = inject_heading_ids(body_html, headings);
     let toc_html = build_toc_html(headings);
 
+    // Mermaid is loaded unconditionally to keep shell logic simple.
+    // Version is pinned (not @latest) for reproducibility and to avoid silent
+    // breakage from upstream CDN updates.
+    const MERMAID_CDN_URL: &str =
+        "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js";
+
     format!(
         "<!DOCTYPE html>\n\
 <html lang=\"en\">\n\
@@ -405,6 +462,7 @@ pub fn build_page_shell(
 <main class=\"content\">\n\
 {content_html}</main>\n\
 </div>\n\
+<script src=\"{MERMAID_CDN_URL}\"></script>\n\
 <script src=\"/assets/mdmd.js\"></script>\n\
 </body>\n\
 </html>\n"
@@ -492,6 +550,37 @@ mod tests {
         assert!(
             html.contains("language-rust") || html.contains("rust"),
             "expected language hint"
+        );
+    }
+
+    #[test]
+    fn mermaid_fence_renders_pre_placeholder() {
+        let (html, _) = render("```mermaid\ngraph TD;\nA-->B;\n```\n");
+        assert!(
+            html.contains("<pre class=\"mermaid\">"),
+            "expected Mermaid SSR placeholder, got: {html}"
+        );
+        assert!(
+            !html.contains("language-mermaid"),
+            "must not render mermaid as a normal code block, got: {html}"
+        );
+    }
+
+    #[test]
+    fn mermaid_fence_escapes_html_chars() {
+        let (html, _) = render("```mermaid\ngraph TD;\nA<>B;\n```\n");
+        assert!(
+            html.contains("A&lt;&gt;B;"),
+            "diagram source must be escaped, got: {html}"
+        );
+    }
+
+    #[test]
+    fn mermaid_fence_detection_is_case_insensitive() {
+        let (html, _) = render("```MERMAID\ngraph TD;\nA-->B;\n```\n");
+        assert!(
+            html.contains("<pre class=\"mermaid\">"),
+            "uppercase MERMAID should be detected, got: {html}"
         );
     }
 
@@ -610,6 +699,16 @@ mod tests {
         let (html_body, headings) = render("# Hi\n");
         let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"));
         assert!(page.contains("<script src=\"/assets/mdmd.js\">"), "script tag present");
+    }
+
+    #[test]
+    fn page_shell_contains_pinned_mermaid_cdn_script() {
+        let (html_body, headings) = render("# Hi\n");
+        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"));
+        assert!(
+            page.contains("<script src=\"https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js\">"),
+            "mermaid CDN script must be present with pinned semver"
+        );
     }
 
     #[test]

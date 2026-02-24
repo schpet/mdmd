@@ -9,7 +9,7 @@
      * ready.  When the CDN script is absent the guard keeps this a no-op.   *
      * --------------------------------------------------------------------- */
     if (typeof mermaid !== 'undefined') {
-        mermaid.initialize({ startOnLoad: true });
+        mermaid.initialize({ startOnLoad: true, theme: 'default' });
     }
 
     /* --------------------------------------------------------------------- *
