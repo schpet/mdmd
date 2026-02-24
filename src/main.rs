@@ -3,7 +3,7 @@ mod render;
 
 use std::{fs, io, path::{Path, PathBuf}, process};
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Layout, Position, Rect},
@@ -33,12 +33,53 @@ struct SearchMatch {
     column_end: usize,
 }
 
-/// Command-line arguments.
+/// Explicit subcommands.
+#[derive(Subcommand)]
+enum Commands {
+    /// View a markdown file in TUI mode (equivalent to legacy positional form)
+    View {
+        /// Path to the markdown file
+        file: String,
+    },
+    /// Serve a markdown file over HTTP
+    Serve {
+        /// Path to the markdown file
+        file: String,
+        /// Interface address to bind to
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        /// Starting port number for the HTTP server
+        #[arg(long, default_value = "3333")]
+        port: u16,
+    },
+}
+
+/// Full CLI with explicit subcommands.
+#[derive(Parser)]
+#[command(
+    name = "mdmd",
+    version,
+    about = "A TUI markdown viewer and navigator",
+    after_help = "INVOCATION FORMS:\n  mdmd <file>                      View file in TUI mode (legacy)\n  mdmd view <file>                 View file in TUI mode\n  mdmd serve [OPTIONS] <file>      Serve file over HTTP"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+/// Legacy positional form: mdmd <file>
 #[derive(Parser)]
 #[command(name = "mdmd", version, about = "A TUI markdown viewer and navigator")]
-struct Cli {
+struct LegacyCli {
     /// Path to a markdown file to view
     file: String,
+}
+
+/// Resolved dispatch mode after CLI argument parsing.
+enum DispatchMode {
+    Legacy { file: String },
+    View { file: String },
+    Serve { file: String, bind: String, port: u16 },
 }
 
 /// State for vim-like `/` search.
@@ -136,11 +177,53 @@ struct NavigationEntry {
     focused_link: Option<usize>,
 }
 
-fn main() -> io::Result<()> {
-    let cli = Cli::parse();
-    let path = Path::new(&cli.file);
+fn resolve_dispatch_mode() -> DispatchMode {
+    match Cli::try_parse() {
+        Ok(cli) => match cli.command {
+            Commands::View { file } => DispatchMode::View { file },
+            Commands::Serve { file, bind, port } => DispatchMode::Serve { file, bind, port },
+        },
+        Err(clap_err) => {
+            // Pass --help, --version, and subcommand-level help through to the full Cli handler.
+            use clap::error::ErrorKind;
+            if matches!(
+                clap_err.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) {
+                clap_err.exit();
+            }
+            // Fall back to legacy positional parse: mdmd <file>
+            match LegacyCli::try_parse() {
+                Ok(legacy) => DispatchMode::Legacy { file: legacy.file },
+                Err(legacy_err) => legacy_err.exit(),
+            }
+        }
+    }
+}
 
-    // Check the file extension before attempting to read
+fn main() -> io::Result<()> {
+    match resolve_dispatch_mode() {
+        DispatchMode::Legacy { file } => {
+            eprintln!("[legacy] TUI viewer dispatched for: {file}");
+            run_tui_file(&file)
+        }
+        DispatchMode::View { file } => {
+            eprintln!("[view] TUI viewer dispatched for: {file}");
+            run_tui_file(&file)
+        }
+        DispatchMode::Serve { file, bind, port } => {
+            eprintln!("[serve] Web server dispatched for: {file} on {bind}:{port}");
+            // Web server bootstrap is implemented in bd-1mz.
+            eprintln!("Error: serve mode not yet implemented.");
+            process::exit(1);
+        }
+    }
+}
+
+fn run_tui_file(file_arg: &str) -> io::Result<()> {
+    let path = Path::new(file_arg);
+
+    // Check the file extension before attempting to read.
     match path.extension().and_then(|e| e.to_str()) {
         Some("md" | "markdown" | "mdx" | "mdown" | "mkd" | "mkdn") => {}
         Some(ext) => {
@@ -149,7 +232,7 @@ fn main() -> io::Result<()> {
             process::exit(1);
         }
         None => {
-            eprintln!("Error: '{}' has no file extension.", cli.file);
+            eprintln!("Error: '{file_arg}' has no file extension.");
             eprintln!("Expected a markdown file (.md, .markdown, .mdx, .mdown, .mkd, .mkdn).");
             process::exit(1);
         }
@@ -158,13 +241,13 @@ fn main() -> io::Result<()> {
     let source = fs::read_to_string(path).unwrap_or_else(|e| {
         match e.kind() {
             io::ErrorKind::NotFound => {
-                eprintln!("Error: file not found: {}", cli.file);
+                eprintln!("Error: file not found: {file_arg}");
             }
             io::ErrorKind::PermissionDenied => {
-                eprintln!("Error: permission denied: {}", cli.file);
+                eprintln!("Error: permission denied: {file_arg}");
             }
             _ => {
-                eprintln!("Error reading '{}': {e}", cli.file);
+                eprintln!("Error reading '{file_arg}': {e}");
             }
         }
         process::exit(1);
