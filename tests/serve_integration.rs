@@ -2687,3 +2687,98 @@ fn test_headless_ci_env_suppresses_browser_attempt() {
         "headless CI env must suppress [browser] diagnostics (no DISPLAY, CI=1)\nstderr:\n{stderr}"
     );
 }
+
+/// Verify that a headed environment with `--verbose` logs `[browser] open failed:`
+/// when the opener command fails.
+///
+/// Simulates a headed environment by setting `DISPLAY=:99` and stripping
+/// `CI`/`GITHUB_ACTIONS`/`SSH_CONNECTION`/`SSH_TTY`.  Uses
+/// `MDMD_OPEN_CMD=__mdmd_no_such_open_cmd__` as a deterministic failing stub.
+///
+/// The test locks the "verbose failure path": when verbose is enabled and the
+/// headed-environment check passes, a spawn failure must produce a
+/// `[browser] open failed:` line on stderr.
+#[cfg(unix)]
+#[test]
+fn test_headed_env_verbose_logs_browser_open_failure() {
+    let fixture = Fixture::new(FixtureOptions::default());
+    let server = ServerHandle::new_with_env(
+        "test_headed_env_verbose_logs_browser_open_failure",
+        &fixture,
+        &["--verbose"],
+        &[
+            // Simulate a headed environment (DISPLAY satisfies Linux headed check;
+            // harmless on macOS where DISPLAY is ignored for headed detection).
+            ("DISPLAY", ":99"),
+            // Deterministic failing stub: spawn will fail, triggering the error path.
+            ("MDMD_OPEN_CMD", "__mdmd_no_such_open_cmd__"),
+        ],
+        // Remove all vars that would suppress headed detection.
+        &["CI", "GITHUB_ACTIONS", "SSH_CONNECTION", "SSH_TTY"],
+    );
+
+    let _ = fetch(&client(), &server.url("/"));
+
+    let output = server.shutdown_with_sigint();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Server must have started and printed at least one URL on stdout.
+    assert!(
+        !stdout.is_empty(),
+        "server must emit URL on stdout\nstdout:\n{stdout}"
+    );
+
+    // With --verbose and a headed env, a spawn failure must emit a [browser] line.
+    assert!(
+        stderr.contains("[browser] open failed:"),
+        "--verbose in headed env must log [browser] open failed: on spawn error\nstderr:\n{stderr}"
+    );
+}
+
+/// Verify that a headed environment without `--verbose` suppresses all
+/// `[browser]` diagnostics even when an open attempt fails.
+///
+/// Simulates the same headed environment as
+/// [`test_headed_env_verbose_logs_browser_open_failure`] but runs the server
+/// in its default (non-verbose) mode.  The spawn failure must be silently
+/// swallowed — no `[browser]` line should appear on stderr.
+///
+/// This locks the "opener failure details are suppressed unless verbose"
+/// acceptance criterion from bd-i8p.
+#[cfg(unix)]
+#[test]
+fn test_headed_env_no_verbose_suppresses_browser_failure_log() {
+    let fixture = Fixture::new(FixtureOptions::default());
+    let server = ServerHandle::new_with_env(
+        "test_headed_env_no_verbose_suppresses_browser_failure_log",
+        &fixture,
+        &[], // no --verbose
+        &[
+            // Simulate a headed environment.
+            ("DISPLAY", ":99"),
+            // Deterministic failing stub.
+            ("MDMD_OPEN_CMD", "__mdmd_no_such_open_cmd__"),
+        ],
+        // Remove all vars that would suppress headed detection.
+        &["CI", "GITHUB_ACTIONS", "SSH_CONNECTION", "SSH_TTY"],
+    );
+
+    let _ = fetch(&client(), &server.url("/"));
+
+    let output = server.shutdown_with_sigint();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Server must have started and printed at least one URL on stdout.
+    assert!(
+        !stdout.is_empty(),
+        "server must emit URL on stdout\nstdout:\n{stdout}"
+    );
+
+    // Without --verbose, browser spawn failures must be completely silent.
+    assert!(
+        !stderr.contains("[browser]"),
+        "without --verbose, [browser] diagnostics must be suppressed even on open failure\nstderr:\n{stderr}"
+    );
+}
