@@ -6,6 +6,7 @@
 
 body {
     margin: 0;
+    padding-bottom: 1.75rem; /* room for the fixed status bar */
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     font-size: 16px;
     line-height: 1.6;
@@ -13,35 +14,38 @@ body {
     background: #fff;
 }
 
-/* ---- Site header ---- */
+/* ---- Status bar (fixed bottom, vim-style) ---- */
 
-.site-header {
-    position: sticky;
-    top: 0;
+.status-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
     z-index: 100;
     display: flex;
     align-items: center;
-    gap: 1rem;
-    padding: 0.5rem 1.5rem;
+    justify-content: space-between;
+    height: 1.5rem;
+    padding: 0 1rem;
     background: #24292e;
-    color: #fff;
-    font-size: 0.875rem;
-    border-bottom: 1px solid #444d56;
-}
-
-.site-header .brand {
-    font-weight: 600;
-    color: #79b8ff;
-    white-space: nowrap;
-}
-
-.site-header .file-path {
     color: #adbac7;
     font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-    font-size: 0.8125rem;
+    font-size: 0.75rem;
+    border-top: 1px solid #444d56;
+}
+
+.status-path {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    color: #e6edf3;
+}
+
+.status-mtime {
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-left: 1.5rem;
+    color: #768390;
 }
 
 /* ---- Two-column layout ---- */
@@ -61,9 +65,9 @@ body {
     flex-shrink: 0;
     width: 220px;
     position: sticky;
-    top: 44px;
+    top: 1rem;
     align-self: flex-start;
-    max-height: calc(100vh - 60px);
+    max-height: calc(100vh - 3rem);
     overflow-y: auto;
     padding: 0.5rem 0;
     font-size: 0.8125rem;
@@ -263,17 +267,6 @@ body {
     max-width: 100%;
 }
 
-/* ---- Heading anchor scroll offset ---- */
-
-/* Prevent sticky header from covering fragment-jump targets. */
-.content h1[id],
-.content h2[id],
-.content h3[id],
-.content h4[id],
-.content h5[id],
-.content h6[id] {
-    scroll-margin-top: 4rem;
-}
 
 /* ---- File change notice ---- */
 
@@ -301,32 +294,42 @@ body {
     font-weight: 600;
 }
 
-/* ---- Backlinks panel ---- */
+/* ---- Backlinks section ---- */
 
 .backlinks-panel {
-    padding: 0.75rem 1.5rem;
-    border-bottom: 1px solid var(--border-color, #e0e0e0);
+    margin-top: 3rem;
+    border: 1px solid var(--border-color, #d0d0d0);
+    border-radius: 6px;
+    padding: 1rem 1.25rem 1.25rem;
 }
 
 .backlinks-header {
-    font-size: 0.9rem;
-    font-weight: 600;
-    color: #666;
-    margin: 0 0 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #888;
+    margin: 0 0 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-color, #d0d0d0);
 }
 
 .backlinks-list {
     list-style: none;
     margin: 0;
     padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
 }
 
 .backlinks-item {
-    margin: 0.4rem 0;
+    margin: 0;
 }
 
 .backlinks-source {
     font-weight: 500;
+    font-size: 0.9rem;
 }
 
 .backlinks-fragment {
@@ -335,16 +338,12 @@ body {
 }
 
 .backlinks-snippet {
-    font-size: 0.85rem;
-    color: #555;
-    margin: 0.1rem 0 0;
-    font-style: italic;
-}
-
-.backlinks-empty-text {
-    color: #888;
-    font-size: 0.85rem;
-    margin: 0;
+    font-size: 0.82rem;
+    color: #777;
+    margin: 0.15rem 0 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* ---- Responsive: hide TOC on narrow screens ---- */

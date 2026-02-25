@@ -769,4 +769,246 @@ mod tests {
             "link escaping serve_root must not produce any backlink edge; index must be empty"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // bd-3oh.1: extract_outbound_links fixture matrix
+    // -----------------------------------------------------------------------
+    //
+    // All tests use synthetic PathBuf values — no filesystem I/O.
+    // serve_root = /root, source_path = /root/docs/a.md (unless stated otherwise).
+
+    #[test]
+    fn extract_relative_dot_link() {
+        // Case 1: [text](./other.md) → target_url_path = '/docs/other.md', no fragment.
+        let src = "[text](./other.md)\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert_eq!(
+            result.outbound_refs.len(),
+            1,
+            "relative ./link must produce one outbound ref"
+        );
+        assert_eq!(result.outbound_refs[0].target_url_path, "/docs/other.md");
+        assert!(
+            result.outbound_refs[0].target_fragment.is_none(),
+            "no fragment expected"
+        );
+    }
+
+    #[test]
+    fn extract_relative_dot_link_with_fragment() {
+        // Case 2: [text](./other.md#section) → target_url_path = '/docs/other.md',
+        //         target_fragment = Some("section").
+        let src = "[text](./other.md#section)\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert_eq!(result.outbound_refs.len(), 1);
+        assert_eq!(result.outbound_refs[0].target_url_path, "/docs/other.md");
+        assert_eq!(
+            result.outbound_refs[0].target_fragment.as_deref(),
+            Some("section")
+        );
+    }
+
+    #[test]
+    fn extract_parent_relative_link() {
+        // Case 3: [text](../sibling/page.md) → target_url_path = '/sibling/page.md'.
+        let src = "[text](../sibling/page.md)\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert_eq!(
+            result.outbound_refs.len(),
+            1,
+            "parent-relative link inside root must be included"
+        );
+        assert_eq!(result.outbound_refs[0].target_url_path, "/sibling/page.md");
+    }
+
+    #[test]
+    fn extract_absolute_local_link() {
+        // Case 4: [text](/absolute/path.md) → target_url_path = '/absolute/path.md'.
+        // Absolute-local links are resolved from serve_root.
+        let src = "[text](/absolute/path.md)\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert_eq!(
+            result.outbound_refs.len(),
+            1,
+            "absolute-local link must be included"
+        );
+        assert_eq!(result.outbound_refs[0].target_url_path, "/absolute/path.md");
+    }
+
+    #[test]
+    fn extract_external_https_excluded() {
+        // Case 5: [text](https://example.com) → excluded.
+        let src = "[text](https://example.com)\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert!(result.outbound_refs.is_empty(), "https links must be excluded");
+    }
+
+    #[test]
+    fn extract_external_http_excluded() {
+        // Case 6: [text](http://example.com) → excluded.
+        let src = "[text](http://example.com)\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert!(result.outbound_refs.is_empty(), "http links must be excluded");
+    }
+
+    #[test]
+    fn extract_fragment_only_excluded() {
+        // Case 7: [text](#heading) → excluded (bare-fragment link).
+        let src = "[text](#heading)\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert!(
+            result.outbound_refs.is_empty(),
+            "fragment-only links must be excluded"
+        );
+    }
+
+    #[test]
+    fn extract_mailto_excluded() {
+        // Case 8: [text](mailto:foo@bar.com) → excluded.
+        let src = "[text](mailto:foo@bar.com)\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert!(result.outbound_refs.is_empty(), "mailto links must be excluded");
+    }
+
+    #[test]
+    fn extract_multi_link_doc_counts_local_only() {
+        // Case 9: 2 local + 1 external → outbound_refs.len() == 2.
+        let src = "[A](./a2.md) [B](./b.md) [Ext](https://example.com)\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert_eq!(
+            result.outbound_refs.len(),
+            2,
+            "only local links must appear in outbound_refs"
+        );
+    }
+
+    #[test]
+    fn extract_snippet_contains_context() {
+        // Case 10: link with surrounding text → snippet is not empty; whitespace collapsed.
+        let src = "Some text before the link [text](./other.md) and some text after\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert_eq!(result.outbound_refs.len(), 1);
+        let snippet = &result.outbound_refs[0].snippet;
+        assert!(!snippet.is_empty(), "snippet must not be empty");
+        assert!(
+            !snippet.contains("  "),
+            "snippet must have whitespace collapsed to single spaces"
+        );
+    }
+
+    #[test]
+    fn extract_snippet_truncated_to_200() {
+        // Case 11: 500+ chars on each side of the link → snippet.len() <= 200.
+        let prefix = "a ".repeat(250); // 500 chars
+        let suffix = "b ".repeat(250); // 500 chars
+        let src = format!("{prefix}[text](./other.md){suffix}");
+        let result =
+            extract_outbound_links(&src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert_eq!(result.outbound_refs.len(), 1);
+        let snippet = &result.outbound_refs[0].snippet;
+        assert!(
+            snippet.len() <= 200,
+            "snippet must be capped at 200 chars, got {}",
+            snippet.len()
+        );
+    }
+
+    #[test]
+    fn extract_empty_input_no_panic() {
+        // Cases 12 & 18: empty &str → DocExtractResult { title: None, outbound_refs: [] }.
+        let result = extract_outbound_links("", Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert!(
+            result.title.is_none(),
+            "empty input must produce no title"
+        );
+        assert!(
+            result.outbound_refs.is_empty(),
+            "empty input must produce no outbound refs"
+        );
+    }
+
+    #[test]
+    fn extract_title_h1() {
+        // Case 13: '# My Title\n\ntext' → title = Some("My Title").
+        let src = "# My Title\n\nSome text\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert_eq!(result.title.as_deref(), Some("My Title"));
+    }
+
+    #[test]
+    fn extract_title_h2_only_is_none() {
+        // Case 14: '## H2 Only\n\ntext' → title = None (H2 does not set title).
+        let src = "## H2 Only\n\nSome text\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert!(
+            result.title.is_none(),
+            "H2-only document must produce no title"
+        );
+    }
+
+    #[test]
+    fn extract_title_after_link() {
+        // Case 15: '[link](./a.md)\n\n# Late Title' → title = Some("Late Title").
+        // Both the link and the H1 are collected in a single pass.
+        let src = "[link](./a.md)\n\n# Late Title\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert_eq!(
+            result.title.as_deref(),
+            Some("Late Title"),
+            "H1 after a link must still be captured"
+        );
+    }
+
+    #[test]
+    fn extract_first_h1_only() {
+        // Case 16: '# First\n\n# Second' → title = Some("First") (first H1 only).
+        let src = "# First\n\n# Second\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert_eq!(
+            result.title.as_deref(),
+            Some("First"),
+            "only the first H1 must be captured"
+        );
+    }
+
+    #[test]
+    fn extract_title_bold_inline() {
+        // Case 17: '# **Bold** *Title*' → title = Some("Bold Title").
+        // Inner text from Strong and Emphasis inlines is joined; markdown syntax dropped.
+        let src = "# **Bold** *Title*\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert_eq!(
+            result.title.as_deref(),
+            Some("Bold Title"),
+            "bold/italic inline markers must be stripped; text joined"
+        );
+    }
+
+    #[test]
+    fn extract_outside_root_link_dropped() {
+        // Case 19: source = /root/docs/a.md, serve_root = /root, link = '../../etc/passwd'.
+        // Resolved path = /etc/passwd; strip_prefix(/root) fails → silently dropped.
+        let src = "[unsafe](../../etc/passwd)\n";
+        let result =
+            extract_outbound_links(src, Path::new("/root/docs/a.md"), Path::new("/root"));
+        assert!(
+            result.outbound_refs.is_empty(),
+            "outside-root link must be silently dropped"
+        );
+    }
 }

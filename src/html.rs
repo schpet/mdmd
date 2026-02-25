@@ -487,27 +487,27 @@ pub fn build_page_shell(
 <head>\n\
 <meta charset=\"utf-8\">\n\
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-<title>{title}</title>\n\
+<title>{title} \u{25c6} mdmd serve</title>\n\
 {mtime_meta}\
 {path_meta}\
 <link rel=\"stylesheet\" href=\"/assets/mdmd.css\">\n\
 </head>\n\
 <body>\n\
-<header class=\"site-header\">\n\
-<span class=\"brand\">mdmd serve</span>\n\
-<span class=\"file-path\">{display_path_escaped}</span>\n\
-</header>\n\
 <div id=\"mdmd-change-notice\" class=\"change-notice\" hidden>\n\
 This file has changed on disk.\n\
 <button class=\"change-notice-reload\" onclick=\"location.reload()\">Load latest</button>\n\
 </div>\n\
-{backlinks_html}\
 <div class=\"layout\">\n\
 <nav class=\"toc-sidebar\">\n\
 {toc_html}</nav>\n\
 <main class=\"content\">\n\
-{content_html}</main>\n\
+{content_html}\
+{backlinks_html}</main>\n\
 </div>\n\
+<footer class=\"status-bar\">\n\
+<span class=\"status-path\">{display_path_escaped}</span>\n\
+<span class=\"status-mtime\" id=\"status-mtime\"></span>\n\
+</footer>\n\
 <script src=\"{MERMAID_CDN_URL}\"></script>\n\
 <script src=\"/assets/mdmd.js\"></script>\n\
 </body>\n\
@@ -515,25 +515,20 @@ This file has changed on disk.\n\
     )
 }
 
-/// Build the HTML fragment for the backlinks panel.
+/// Build the HTML fragment for the backlinks section.
 ///
-/// When `backlinks` is empty, the panel reads "No backlinks yet." with the
-/// `backlinks-panel--empty` modifier class.  Otherwise each [`BacklinkRef`] is
-/// rendered as a list item with a source link (including fragment when present),
-/// an optional fragment hint span, and a context snippet.
+/// Returns an empty string when there are no backlinks so nothing is rendered.
+/// Otherwise renders a bordered footnote-style section below the document
+/// content with one entry per source document.
 fn build_backlinks_html(backlinks: &[BacklinkRef]) -> String {
     if backlinks.is_empty() {
-        return "<section class=\"backlinks-panel backlinks-panel--empty\" aria-label=\"Backlinks\">\n\
-<p class=\"backlinks-empty-text\">No backlinks yet.</p>\n\
-</section>\n"
-            .to_owned();
+        return String::new();
     }
 
-    let count = backlinks.len();
-    let mut html = format!(
+    let mut html = String::from(
         "<section class=\"backlinks-panel\" aria-label=\"Backlinks\">\n\
-<h2 class=\"backlinks-header\">Backlinks ({count})</h2>\n\
-<ul class=\"backlinks-list\">\n"
+<h2 class=\"backlinks-header\">Backlinks</h2>\n\
+<ul class=\"backlinks-list\">\n",
     );
     for bl in backlinks {
         let base_href = html_escape(&bl.source_url_path);
@@ -1240,10 +1235,10 @@ mod tests {
             Path::new("/r"),
             &PageShellContext { backlinks: &bls, file_mtime_secs: None, page_url_path: None },
         );
-        // Count in header
+        // Header label
         assert!(
-            page.contains("Backlinks (2)"),
-            "populated panel must show count, got: {page}"
+            page.contains(">Backlinks<"),
+            "populated panel must show header, got: {page}"
         );
         // Source link for item without fragment
         assert!(
@@ -1283,16 +1278,8 @@ mod tests {
             &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None },
         );
         assert!(
-            page.contains("No backlinks yet."),
-            "empty panel text, got: {page}"
-        );
-        assert!(
-            !page.contains("Backlinks ("),
-            "empty panel must not show count, got: {page}"
-        );
-        assert!(
-            page.contains("backlinks-panel--empty"),
-            "empty modifier class, got: {page}"
+            !page.contains("backlinks-panel"),
+            "empty state must render no backlinks section, got: {page}"
         );
     }
 
@@ -1321,6 +1308,155 @@ mod tests {
         assert!(
             crate::web_assets::CSS.contains("scroll-margin-top"),
             "CSS must contain scroll-margin-top for heading anchor offset"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // bd-3oh.2: PageShellContext / meta tag / backlinks HTML contract tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn page_shell_mtime_meta_tag_emitted() {
+        // Test 8: file_mtime_secs = Some(12345), page_url_path = Some("docs/test.md")
+        // → HTML contains content="12345" and content="docs/test.md".
+        let (html_body, headings) = render("# Test\n");
+        let ctx = PageShellContext {
+            backlinks: &[],
+            file_mtime_secs: Some(12345),
+            page_url_path: Some("docs/test.md"),
+        };
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/docs/test.md"),
+            Path::new("/r"),
+            &ctx,
+        );
+        assert!(
+            page.contains("name=\"mdmd-mtime\""),
+            "mdmd-mtime meta name must be present, got: {page}"
+        );
+        assert!(
+            page.contains("content=\"12345\""),
+            "mtime meta content must equal 12345, got: {page}"
+        );
+        assert!(
+            page.contains("content=\"docs/test.md\""),
+            "path meta content must equal docs/test.md, got: {page}"
+        );
+    }
+
+    #[test]
+    fn page_shell_no_mtime_meta_tag_when_none() {
+        // Test 9: file_mtime_secs = None → HTML must NOT contain mdmd-mtime meta tag.
+        let (html_body, headings) = render("# Test\n");
+        let ctx = PageShellContext {
+            backlinks: &[],
+            file_mtime_secs: None,
+            page_url_path: None,
+        };
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &ctx,
+        );
+        assert!(
+            !page.contains("mdmd-mtime"),
+            "mdmd-mtime meta tag must be absent when file_mtime_secs is None, got: {page}"
+        );
+    }
+
+    #[test]
+    fn backlinks_source_display_as_link_text() {
+        // Test 11: source_display = "My Title" → HTML contains ">My Title</a>".
+        let bls = vec![BacklinkRef {
+            source_url_path: "/a.md".to_owned(),
+            source_display: "My Title".to_owned(),
+            snippet: "some context".to_owned(),
+            target_fragment: None,
+        }];
+        let (html_body, headings) = render("# Hi\n");
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                backlinks: &bls,
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
+        assert!(
+            page.contains(">My Title</a>"),
+            "source_display must be rendered as exact link text, got: {page}"
+        );
+    }
+
+    #[test]
+    fn backlinks_source_display_path_fallback() {
+        // Test 12: source_display = "docs/a.md" (path fallback) → HTML contains ">docs/a.md</a>".
+        let bls = vec![BacklinkRef {
+            source_url_path: "/docs/a.md".to_owned(),
+            source_display: "docs/a.md".to_owned(),
+            snippet: "context".to_owned(),
+            target_fragment: None,
+        }];
+        let (html_body, headings) = render("# Hi\n");
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                backlinks: &bls,
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
+        assert!(
+            page.contains(">docs/a.md</a>"),
+            "path-fallback source_display must be rendered as link text, got: {page}"
+        );
+    }
+
+    #[test]
+    fn backlinks_xss_escaping() {
+        // Test 13: source_display with XSS payload → escaped;
+        // snippet with pre-existing & entity → double-escaped (&amp;amp;).
+        let bls = vec![BacklinkRef {
+            source_url_path: "/a.md".to_owned(),
+            source_display: "<script>xss</script>".to_owned(),
+            snippet: "&amp;".to_owned(), // & → &amp;amp; after html_escape
+            target_fragment: None,
+        }];
+        let (html_body, headings) = render("# Hi\n");
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                backlinks: &bls,
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
+        // source_display: <script>xss</script> → &lt;script&gt;xss&lt;/script&gt;
+        assert!(
+            page.contains("&lt;script&gt;"),
+            "< in source_display must be html-escaped, got: {page}"
+        );
+        assert!(
+            !page.contains("<script>"),
+            "raw <script> tag must not appear in output, got: {page}"
+        );
+        // snippet: &amp; → html_escape converts & → &amp;, producing &amp;amp;
+        assert!(
+            page.contains("&amp;amp;"),
+            "& in snippet must produce &amp;amp; (double-escaped), got: {page}"
         );
     }
 }

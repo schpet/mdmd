@@ -2135,4 +2135,111 @@ mod tests {
             "decoded path segment should match dir with spaces"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // bd-3oh.2: key-parity, norm_display round-trip, and self-link tests
+    // -----------------------------------------------------------------------
+
+    // Tests 1-3: url_key_from_rel_path produces correct keys for the paths
+    // that appear as norm_display values in serve_handler.
+
+    #[test]
+    fn url_key_parity_docs_readme() {
+        // Test 1: url_key_from_rel_path("docs/readme.md") == "/docs/readme.md"
+        assert_eq!(
+            crate::backlinks::url_key_from_rel_path("docs/readme.md"),
+            "/docs/readme.md"
+        );
+    }
+
+    #[test]
+    fn url_key_parity_empty() {
+        // Test 2: url_key_from_rel_path("") == "/"
+        assert_eq!(crate::backlinks::url_key_from_rel_path(""), "/");
+    }
+
+    #[test]
+    fn url_key_parity_readme() {
+        // Test 3: url_key_from_rel_path("readme.md") == "/readme.md"
+        assert_eq!(
+            crate::backlinks::url_key_from_rel_path("readme.md"),
+            "/readme.md"
+        );
+    }
+
+    #[test]
+    fn norm_display_round_trip() {
+        // Test 4: Simulate the serve_handler pipeline for a percent-encoded path.
+        // percent_decode("/docs/read%20me.md") + normalize_path()
+        // → norm_display = "docs/read me.md"
+        // → url_key_from_rel_path(norm_display) = "/docs/read me.md"
+        let decoded = percent_decode("/docs/read%20me.md").unwrap();
+        let normalized = normalize_path(&decoded).unwrap();
+        let norm_display = normalized.display().to_string();
+        assert_eq!(
+            norm_display,
+            "docs/read me.md",
+            "decoded path must produce norm_display without leading slash"
+        );
+        let key = crate::backlinks::url_key_from_rel_path(&norm_display);
+        assert_eq!(
+            key,
+            "/docs/read me.md",
+            "key must have leading slash and decoded (space-containing) content"
+        );
+    }
+
+    #[test]
+    fn key_has_no_fragment() {
+        // Test 5: axum separates path from fragment before serve_handler is called.
+        // Confirm that normalize_path + url_key_from_rel_path produces a fragment-free key.
+        let decoded = percent_decode("/docs/page.md").unwrap();
+        let normalized = normalize_path(&decoded).unwrap();
+        let norm_display = normalized.display().to_string();
+        let key = crate::backlinks::url_key_from_rel_path(&norm_display);
+        assert_eq!(key, "/docs/page.md");
+        assert!(
+            !key.contains('#'),
+            "backlinks lookup key must never contain a fragment"
+        );
+    }
+
+    #[test]
+    fn backlinks_index_self_link_excluded() {
+        // Test 6: source_url_path = '/docs/a.md' links to target_url_path = '/docs/a.md'.
+        // Assert backlinks_index.get('/docs/a.md') is absent or empty.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let docs = tmp.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("a.md"), "# A Doc\n\nSee [self](a.md).\n").unwrap();
+
+        let idx = crate::backlinks::build_backlinks_index(tmp.path());
+        let is_empty = idx
+            .get("/docs/a.md")
+            .map(|v| v.is_empty())
+            .unwrap_or(true);
+        assert!(
+            is_empty,
+            "self-link must not produce a backlink entry for /docs/a.md"
+        );
+    }
+
+    #[test]
+    fn backlinks_index_different_files_linked() {
+        // Test 7: /docs/a.md links to /docs/b.md (different files).
+        // Assert backlinks_index['/docs/b.md'] contains one BacklinkRef
+        // with source_url_path = '/docs/a.md'.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let docs = tmp.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("a.md"), "# A Doc\n\nSee [B](b.md).\n").unwrap();
+        std::fs::write(docs.join("b.md"), "# B Doc\n").unwrap();
+
+        let idx = crate::backlinks::build_backlinks_index(tmp.path());
+        let refs = idx
+            .get("/docs/b.md")
+            .expect("/docs/b.md must have a backlink from /docs/a.md");
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].source_url_path, "/docs/a.md");
+    }
 }
