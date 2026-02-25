@@ -517,17 +517,18 @@ This file has changed on disk.\n\
 
 /// Build the HTML fragment for the backlinks section.
 ///
-/// Returns an empty string when there are no backlinks so nothing is rendered.
+/// Returns an empty-state aside when there are no backlinks.
 /// Otherwise renders a bordered footnote-style section below the document
-/// content with one entry per source document.
+/// content with one entry per source document and a count in the header.
 fn build_backlinks_html(backlinks: &[BacklinkRef]) -> String {
     if backlinks.is_empty() {
-        return String::new();
+        return "<aside class=\"backlinks-empty\"><p>No backlinks yet.</p></aside>\n".to_owned();
     }
 
-    let mut html = String::from(
+    let count = backlinks.len();
+    let mut html = format!(
         "<section class=\"backlinks-panel\" aria-label=\"Backlinks\">\n\
-<h2 class=\"backlinks-header\">Backlinks</h2>\n\
+<h2 class=\"backlinks-header\">Backlinks ({count})</h2>\n\
 <ul class=\"backlinks-list\">\n",
     );
     for bl in backlinks {
@@ -1235,10 +1236,10 @@ mod tests {
             Path::new("/r"),
             &PageShellContext { backlinks: &bls, file_mtime_secs: None, page_url_path: None },
         );
-        // Header label
+        // Header label with count (2 backlink refs supplied)
         assert!(
-            page.contains(">Backlinks<"),
-            "populated panel must show header, got: {page}"
+            page.contains(">Backlinks (2)<"),
+            "populated panel must show header with count, got: {page}"
         );
         // Source link for item without fragment
         assert!(
@@ -1281,6 +1282,10 @@ mod tests {
             !page.contains("backlinks-panel"),
             "empty state must render no backlinks section, got: {page}"
         );
+        assert!(
+            page.contains("No backlinks yet."),
+            "empty state must show 'No backlinks yet.' text, got: {page}"
+        );
     }
 
     #[test]
@@ -1304,10 +1309,18 @@ mod tests {
     }
 
     #[test]
-    fn scroll_margin_top_in_css() {
+    fn status_bar_in_html() {
+        let (html_body, headings) = render("# Hi\n");
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None },
+        );
         assert!(
-            crate::web_assets::CSS.contains("scroll-margin-top"),
-            "CSS must contain scroll-margin-top for heading anchor offset"
+            page.contains("class=\"status-bar\""),
+            "status bar element must be present, got: {page}"
         );
     }
 

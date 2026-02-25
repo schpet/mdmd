@@ -81,7 +81,6 @@ pub type BacklinksIndex = HashMap<String, Vec<BacklinkRef>>;
 ///
 /// After the full traversal emits:
 /// - `eprintln!("[backlinks] indexed files={} edges={}", …)` to stderr
-/// - `println!("backlinks: startup-indexed; restart server after file edits to pick up changes")` to stdout
 pub fn build_backlinks_index(serve_root: &Path) -> BacklinksIndex {
     use std::collections::VecDeque;
     use std::fs;
@@ -198,7 +197,6 @@ pub fn build_backlinks_index(serve_root: &Path) -> BacklinksIndex {
         "[backlinks] indexed files={} edges={}",
         file_count, edge_count
     );
-    println!("backlinks: startup-indexed; restart server after file edits to pick up changes");
 
     index
 }

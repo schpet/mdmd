@@ -1674,3 +1674,670 @@ fn test_serve_symlink_outside_root_denied_with_outside_root_log() {
         stderr
     );
 }
+
+// ---------------------------------------------------------------------------
+// bd-26u: backlinks startup stdout/stderr
+// ---------------------------------------------------------------------------
+
+/// Verifies that the backlinks startup hint appears in stdout and the scan
+/// count line appears in stderr after server startup.
+#[test]
+fn test_backlinks_startup_stdout() {
+    let fixture = Fixture::new(FixtureOptions::default());
+    let server = ServerHandle::new("test_backlinks_startup_stdout", &fixture);
+
+    // Trigger at least one request so the server is fully warmed up.
+    let _ = fetch(&client(), &server.url("/"));
+
+    let output = server.shutdown_with_sigint();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stdout.contains("backlinks: startup-indexed"),
+        "restart reminder missing from stdout\nstdout:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("[backlinks] indexed files="),
+        "scan count missing from stderr\nstderr:\n{stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// bd-26u.1: backlinks panel rendering, empty state, fragment visibility
+// ---------------------------------------------------------------------------
+
+/// Build a fixture with cross-linked pages for backlinks E2E testing.
+fn make_backlinks_fixture() -> Fixture {
+    let tmp = tempfile::tempdir().expect("create backlinks tempdir");
+    let root = tmp.path().to_path_buf();
+
+    // a.md links to b.md with a fragment — creates one backlink for b.md.
+    fs::write(
+        root.join("a.md"),
+        "# Page A\n\nSee also [Page B](./b.md#section-1).\n",
+    )
+    .expect("write a.md");
+
+    // b.md is the target of a.md; has its own section heading.
+    fs::write(
+        root.join("b.md"),
+        "# Page B\n\n## Section 1\n\nContent here.\n",
+    )
+    .expect("write b.md");
+
+    // empty.md has no inbound links.
+    fs::write(root.join("empty.md"), "# Empty\n\nNo links here.\n").expect("write empty.md");
+
+    // c.md and d.md both link to target.md — creates two backlinks for target.md.
+    fs::write(root.join("c.md"), "# Page C\n\n[Target](./target.md)\n").expect("write c.md");
+    fs::write(root.join("d.md"), "# Page D\n\n[Target](./target.md)\n").expect("write d.md");
+
+    // target.md is referenced by both c.md and d.md.
+    fs::write(root.join("target.md"), "# Target\n\nTarget content.\n").expect("write target.md");
+
+    Fixture {
+        entry: root.join("a.md"),
+        _tmp: tmp,
+        root,
+    }
+}
+
+/// b.md has one inbound backlink (from a.md) — verifies populated panel rendering.
+#[test]
+fn test_backlinks_panel_populated() {
+    let fixture = make_backlinks_fixture();
+    let server = ServerHandle::new("test_backlinks_panel_populated", &fixture);
+    let c = client();
+
+    let resp = fetch(&c, &server.url("/b.md"));
+    assert_status(&resp, 200);
+    let body = resp.body_text();
+
+    assert!(
+        body.contains("Backlinks (1)"),
+        "backlinks count header missing\n{}",
+        resp.context()
+    );
+    assert!(
+        body.contains("href=\"/a.md\"") || body.contains("href=\"/a.md#"),
+        "source link to a.md missing\n{}",
+        resp.context()
+    );
+    assert!(
+        body.contains("Page A"),
+        "source display title 'Page A' missing\n{}",
+        resp.context()
+    );
+    assert!(
+        body.contains("section-1"),
+        "fragment hint for section-1 missing\n{}",
+        resp.context()
+    );
+    assert!(
+        body.contains("backlinks-panel"),
+        "backlinks-panel section class missing\n{}",
+        resp.context()
+    );
+}
+
+/// empty.md has no inbound backlinks — verifies empty state rendering.
+#[test]
+fn test_backlinks_panel_empty() {
+    let fixture = make_backlinks_fixture();
+    let server = ServerHandle::new("test_backlinks_panel_empty", &fixture);
+    let c = client();
+
+    let resp = fetch(&c, &server.url("/empty.md"));
+    assert_status(&resp, 200);
+    let body = resp.body_text();
+
+    assert!(
+        body.contains("No backlinks yet."),
+        "empty state must show 'No backlinks yet.'\n{}",
+        resp.context()
+    );
+    assert!(
+        !body.contains("Backlinks ("),
+        "populated header shown for empty state\n{}",
+        resp.context()
+    );
+}
+
+/// target.md has two inbound backlinks (c.md, d.md) — verifies count accuracy.
+#[test]
+fn test_backlinks_count_accuracy() {
+    let fixture = make_backlinks_fixture();
+    let server = ServerHandle::new("test_backlinks_count_accuracy", &fixture);
+    let c = client();
+
+    let resp = fetch(&c, &server.url("/target.md"));
+    assert_status(&resp, 200);
+    let body = resp.body_text();
+
+    assert!(
+        body.contains("Backlinks (2)"),
+        "backlinks count must be 2\n{}",
+        resp.context()
+    );
+    assert!(
+        body.contains("Page C"),
+        "source display 'Page C' missing\n{}",
+        resp.context()
+    );
+    assert!(
+        body.contains("Page D"),
+        "source display 'Page D' missing\n{}",
+        resp.context()
+    );
+}
+
+/// Every rendered markdown page must include the change-notice div with hidden attribute.
+#[test]
+fn test_change_notice_div_present_and_hidden() {
+    let fixture = make_backlinks_fixture();
+    let server = ServerHandle::new("test_change_notice_div_present_and_hidden", &fixture);
+    let c = client();
+
+    let resp = fetch(&c, &server.url("/b.md"));
+    assert_status(&resp, 200);
+    let body = resp.body_text();
+
+    let notice_pos = body.find("id=\"mdmd-change-notice\"");
+    assert!(
+        notice_pos.is_some(),
+        "id=\"mdmd-change-notice\" missing from page\n{}",
+        resp.context()
+    );
+    let context_slice = &body[notice_pos.unwrap()..notice_pos.unwrap() + 100];
+    assert!(
+        context_slice.contains("hidden"),
+        "change-notice div must carry the 'hidden' attribute\ncontext: {context_slice}"
+    );
+}
+
+/// /assets/mdmd.css must contain scroll-margin-top for heading anchor navigation.
+#[test]
+fn test_scroll_margin_top_in_css() {
+    let fixture = Fixture::new(FixtureOptions::default());
+    let server = ServerHandle::new("test_scroll_margin_top_in_css", &fixture);
+    let c = client();
+
+    let resp = fetch(&c, &server.url("/assets/mdmd.css"));
+    assert_status(&resp, 200);
+    assert!(
+        resp.body_text().contains("scroll-margin-top"),
+        "heading anchor scroll-margin missing from CSS\n{}",
+        resp.context()
+    );
+}
+
+/// No anchor element in a rendered page should have 'back to' as visible link text.
+#[test]
+fn test_no_back_to_links() {
+    let fixture = make_backlinks_fixture();
+    let server = ServerHandle::new("test_no_back_to_links", &fixture);
+    let c = client();
+
+    let resp = fetch(&c, &server.url("/b.md"));
+    assert_status(&resp, 200);
+    let body_lower = resp.body_text().to_lowercase();
+
+    // Check that ">back to" does not appear — this pattern catches link text
+    // like <a ...>back to ...</a> while ignoring code comments.
+    assert!(
+        !body_lower.contains(">back to"),
+        "found 'back to' as anchor link text\n{}",
+        resp.context()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// bd-26u.2: file-change notice reload flow
+// ---------------------------------------------------------------------------
+
+/// Build a minimal fixture with a single fixture.md entry for freshness tests.
+fn make_freshness_fixture() -> Fixture {
+    let tmp = tempfile::tempdir().expect("create freshness tempdir");
+    let root = tmp.path().to_path_buf();
+    let entry = root.join("fixture.md");
+    fs::write(&entry, "# Test\n\nContent.\n").expect("write fixture.md");
+
+    Fixture {
+        entry: entry.clone(),
+        _tmp: tmp,
+        root,
+    }
+}
+
+/// GET /_mdmd/freshness?path=fixture.md must return 200 with a positive mtime.
+#[test]
+fn test_freshness_endpoint_returns_mtime() {
+    let fixture = make_freshness_fixture();
+    let server = ServerHandle::new("test_freshness_endpoint_returns_mtime", &fixture);
+    let c = client();
+
+    let resp = fetch(&c, &server.url("/_mdmd/freshness?path=fixture.md"));
+    assert_status(&resp, 200);
+
+    let body = resp.body_text();
+    let json: serde_json::Value =
+        serde_json::from_str(&body).expect("freshness response must be valid JSON");
+    let mtime = json["mtime"].as_u64().expect("mtime must be a u64");
+    assert!(mtime > 0, "mtime must be positive, got {mtime}");
+}
+
+/// After modifying fixture.md the freshness endpoint must return a newer mtime.
+#[test]
+fn test_freshness_detects_file_change() {
+    let fixture = make_freshness_fixture();
+    let server = ServerHandle::new("test_freshness_detects_file_change", &fixture);
+    let c = client();
+
+    // Snapshot the initial mtime.
+    let resp1 = fetch(&c, &server.url("/_mdmd/freshness?path=fixture.md"));
+    assert_status(&resp1, 200);
+    let mtime1 = serde_json::from_str::<serde_json::Value>(&resp1.body_text())
+        .expect("initial freshness JSON")["mtime"]
+        .as_u64()
+        .expect("initial mtime u64");
+
+    // Wait at least one second so the filesystem mtime advances.
+    thread::sleep(Duration::from_secs(1));
+
+    // Mutate the file.
+    fs::write(
+        fixture.root.join("fixture.md"),
+        "# Test\n\nUpdated content.\n",
+    )
+    .expect("mutate fixture.md");
+
+    // Poll until the mtime changes (up to STARTUP_TIMEOUT) to absorb any
+    // filesystem granularity delay.
+    let start = std::time::Instant::now();
+    let mtime2 = loop {
+        let resp = fetch(&c, &server.url("/_mdmd/freshness?path=fixture.md"));
+        let m = serde_json::from_str::<serde_json::Value>(&resp.body_text())
+            .expect("mutated freshness JSON")["mtime"]
+            .as_u64()
+            .expect("mutated mtime u64");
+        if m > mtime1 {
+            break m;
+        }
+        if start.elapsed() > STARTUP_TIMEOUT {
+            break m;
+        }
+        thread::sleep(Duration::from_millis(200));
+    };
+
+    assert!(
+        mtime2 > mtime1,
+        "freshness endpoint must return newer mtime after file change; mtime1={mtime1} mtime2={mtime2}"
+    );
+}
+
+/// Two consecutive freshness requests on an unmodified file return the same mtime.
+#[test]
+fn test_freshness_unchanged_file() {
+    let fixture = make_freshness_fixture();
+    let server = ServerHandle::new("test_freshness_unchanged_file", &fixture);
+    let c = client();
+
+    let resp1 = fetch(&c, &server.url("/_mdmd/freshness?path=fixture.md"));
+    let resp2 = fetch(&c, &server.url("/_mdmd/freshness?path=fixture.md"));
+    assert_status(&resp1, 200);
+    assert_status(&resp2, 200);
+
+    let mtime1 = serde_json::from_str::<serde_json::Value>(&resp1.body_text())
+        .expect("first freshness JSON")["mtime"]
+        .as_u64()
+        .expect("first mtime u64");
+    let mtime2 = serde_json::from_str::<serde_json::Value>(&resp2.body_text())
+        .expect("second freshness JSON")["mtime"]
+        .as_u64()
+        .expect("second mtime u64");
+
+    assert_eq!(
+        mtime1, mtime2,
+        "mtime must be stable for unmodified file; mtime1={mtime1} mtime2={mtime2}"
+    );
+}
+
+/// Path traversal via ../../ must return 404 from the freshness endpoint.
+#[test]
+fn test_freshness_path_traversal_blocked() {
+    let fixture = make_freshness_fixture();
+    let server = ServerHandle::new("test_freshness_path_traversal_blocked", &fixture);
+    let c = client();
+
+    let resp = fetch(
+        &c,
+        &server.url("/_mdmd/freshness?path=../../etc/passwd"),
+    );
+    assert_status(&resp, 404);
+}
+
+/// A rendered markdown page must include the mdmd-mtime and mdmd-path meta tags.
+#[test]
+fn test_page_has_mtime_meta_tag() {
+    let fixture = make_freshness_fixture();
+    let server = ServerHandle::new("test_page_has_mtime_meta_tag", &fixture);
+    let c = client();
+
+    let resp = fetch(&c, &server.url("/fixture.md"));
+    assert_status(&resp, 200);
+    let body = resp.body_text();
+
+    assert!(
+        body.contains("name=\"mdmd-mtime\""),
+        "mdmd-mtime meta tag missing from page\n{}",
+        resp.context()
+    );
+    assert!(
+        body.contains("name=\"mdmd-path\""),
+        "mdmd-path meta tag missing from page\n{}",
+        resp.context()
+    );
+    assert!(
+        body.contains("content=\"fixture.md\""),
+        "mdmd-path meta content must equal 'fixture.md'\n{}",
+        resp.context()
+    );
+}
+
+/// A rendered markdown page must contain the change-notice div in the hidden state.
+#[test]
+fn test_page_has_change_notice_div() {
+    let fixture = make_freshness_fixture();
+    let server = ServerHandle::new("test_page_has_change_notice_div", &fixture);
+    let c = client();
+
+    let resp = fetch(&c, &server.url("/fixture.md"));
+    assert_status(&resp, 200);
+    let body = resp.body_text();
+
+    assert!(
+        body.contains("id=\"mdmd-change-notice\""),
+        "change-notice div id missing\n{}",
+        resp.context()
+    );
+    assert!(
+        body.contains("Load latest"),
+        "Load latest button text missing from change-notice div\n{}",
+        resp.context()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// bd-26u.3: out-of-cwd warning modes and cross-directory allow/block matrix
+// ---------------------------------------------------------------------------
+
+/// Wait for a server to start accepting TCP connections on the given port.
+fn wait_for_port(port: u16) {
+    let start = std::time::Instant::now();
+    loop {
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return;
+        }
+        if start.elapsed() > STARTUP_TIMEOUT {
+            panic!(
+                "server did not become ready on port {} within {:?}",
+                port, STARTUP_TIMEOUT
+            );
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// When stdin is /dev/null (non-interactive) the server auto-proceeds past the
+/// out-of-cwd warning without any prompt.
+#[cfg(unix)]
+#[test]
+fn test_out_of_cwd_non_interactive_proceeds() {
+    let tmp = tempfile::tempdir().expect("create ooc tempdir");
+    let entry = tmp.path().join("doc.md");
+    fs::write(&entry, "# Doc\n").expect("write doc.md");
+
+    let port = free_port();
+    let mut child = Command::new(bin_path())
+        .arg("serve")
+        .arg("--bind")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg(port.to_string())
+        .arg(&entry)
+        // current_dir("/") ensures the entry is outside CWD.
+        .current_dir("/")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn out-of-cwd server");
+
+    // Server should start and serve requests.
+    wait_for_port(port);
+
+    assert!(
+        child.try_wait().expect("try_wait").is_none(),
+        "server process must still be running after startup"
+    );
+
+    // Shut down cleanly.
+    send_sigint(child.id());
+    wait_with_timeout(&mut child, Duration::from_secs(5));
+    let output = child.wait_with_output().expect("collect output");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("WARNING"),
+        "out-of-cwd WARNING missing from stderr\nstderr:\n{stderr}"
+    );
+}
+
+/// When the user writes 'y' to piped stdin the server proceeds past the warning.
+#[cfg(unix)]
+#[test]
+fn test_out_of_cwd_interactive_confirm_proceeds() {
+    let tmp = tempfile::tempdir().expect("create ooc confirm tempdir");
+    let entry = tmp.path().join("doc.md");
+    fs::write(&entry, "# Doc\n").expect("write doc.md");
+
+    let port = free_port();
+    let mut child = Command::new(bin_path())
+        .arg("serve")
+        .arg("--bind")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg(port.to_string())
+        .arg(&entry)
+        .current_dir("/")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn out-of-cwd server (confirm)");
+
+    // Provide 'y' confirmation before the server reads stdin.
+    if let Some(mut stdin_handle) = child.stdin.take() {
+        stdin_handle.write_all(b"y\n").expect("write y to stdin");
+    }
+
+    wait_for_port(port);
+
+    assert!(
+        child.try_wait().expect("try_wait").is_none(),
+        "server process must be running after 'y' confirmation"
+    );
+
+    send_sigint(child.id());
+    wait_with_timeout(&mut child, Duration::from_secs(5));
+    let output = child.wait_with_output().expect("collect output");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("WARNING"),
+        "out-of-cwd WARNING missing from stderr\nstderr:\n{stderr}"
+    );
+}
+
+/// When the user writes 'n' to piped stdin the server aborts with a non-zero exit.
+#[cfg(unix)]
+#[test]
+fn test_out_of_cwd_interactive_decline_exits() {
+    let tmp = tempfile::tempdir().expect("create ooc decline tempdir");
+    let entry = tmp.path().join("doc.md");
+    fs::write(&entry, "# Doc\n").expect("write doc.md");
+
+    let port = free_port();
+    let mut child = Command::new(bin_path())
+        .arg("serve")
+        .arg("--bind")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg(port.to_string())
+        .arg(&entry)
+        .current_dir("/")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn out-of-cwd server (decline)");
+
+    // Provide 'n' to abort.
+    if let Some(mut stdin_handle) = child.stdin.take() {
+        stdin_handle.write_all(b"n\n").expect("write n to stdin");
+    }
+
+    // Poll for child exit (process should exit quickly after reading 'n').
+    wait_with_timeout(&mut child, Duration::from_secs(5));
+    let output = child.wait_with_output().expect("collect output");
+
+    assert!(
+        !output.status.success(),
+        "process must exit non-zero after declining the out-of-cwd prompt"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Aborted"),
+        "Aborted message missing from stderr\nstderr:\n{stderr}"
+    );
+}
+
+/// When the entry is inside CWD the server must NOT emit the out-of-cwd WARNING.
+#[cfg(unix)]
+#[test]
+fn test_in_cwd_no_warning() {
+    // Create the fixture temp dir inside the test process's CWD so that the
+    // entry is inside the server's CWD.
+    let cwd = std::env::current_dir().expect("get cwd");
+    let tmp = tempfile::Builder::new()
+        .tempdir_in(&cwd)
+        .expect("create tempdir inside CWD");
+    let entry = tmp.path().join("doc.md");
+    fs::write(&entry, "# Doc\n").expect("write doc.md");
+
+    let fixture = Fixture {
+        _tmp: tmp,
+        root: entry.parent().unwrap().to_path_buf(),
+        entry,
+    };
+
+    let server = ServerHandle::new("test_in_cwd_no_warning", &fixture);
+    let _ = fetch(&client(), &server.url("/"));
+
+    let output = server.shutdown_with_sigint();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !stderr.contains("WARNING"),
+        "in-cwd server must not emit WARNING\nstderr:\n{stderr}"
+    );
+}
+
+/// When the serve_root is the parent directory both sibling sub-dirs are accessible.
+#[cfg(unix)]
+#[test]
+fn test_cross_dir_allow_broad_root() {
+    let tmp = tempfile::tempdir().expect("create cross-dir tempdir");
+    let base = tmp.path().to_path_buf();
+
+    // Layout: base/docs/a.md  base/other/b.md  base/README.md (entry for directory serve)
+    fs::create_dir_all(base.join("docs")).expect("create docs/");
+    fs::create_dir_all(base.join("other")).expect("create other/");
+    fs::write(base.join("README.md"), "# Base\n").expect("write README.md");
+    fs::write(
+        base.join("docs").join("a.md"),
+        "# Page A\n\n[Page B](../other/b.md)\n",
+    )
+    .expect("write docs/a.md");
+    fs::write(base.join("other").join("b.md"), "# Page B\n\nContent.\n")
+        .expect("write other/b.md");
+
+    let port = free_port();
+    let mut child = Command::new(bin_path())
+        .arg("serve")
+        .arg("--bind")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg(port.to_string())
+        // Pass the parent directory as entry: serve_root = base/
+        .arg(&base)
+        .current_dir("/")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn broad-root server");
+
+    wait_for_port(port);
+
+    let c = client();
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    // Both sibling paths must be accessible under broad root.
+    let resp_a = fetch(&c, &format!("{base_url}/docs/a.md"));
+    assert_status(&resp_a, 200);
+
+    let resp_b = fetch(&c, &format!("{base_url}/other/b.md"));
+    assert_status(
+        &resp_b,
+        200,
+    );
+
+    send_sigint(child.id());
+    wait_with_timeout(&mut child, Duration::from_secs(5));
+    let _ = child.wait_with_output();
+}
+
+/// When the serve_root is a narrow subdirectory a cross-dir path returns 404.
+#[test]
+fn test_cross_dir_block_narrow_root() {
+    let tmp = tempfile::tempdir().expect("create cross-dir narrow tempdir");
+    let base = tmp.path().to_path_buf();
+
+    fs::create_dir_all(base.join("docs")).expect("create docs/");
+    fs::create_dir_all(base.join("other")).expect("create other/");
+    fs::write(
+        base.join("docs").join("a.md"),
+        "# Page A\n\n[Page B](../other/b.md)\n",
+    )
+    .expect("write docs/a.md");
+    fs::write(base.join("other").join("b.md"), "# Page B\n\nContent.\n")
+        .expect("write other/b.md");
+
+    // Serve entry is docs/a.md: serve_root = docs/; other/ is outside root.
+    let fixture = Fixture {
+        entry: base.join("docs").join("a.md"),
+        _tmp: tmp,
+        root: base.join("docs"),
+    };
+    let server = ServerHandle::new("test_cross_dir_block_narrow_root", &fixture);
+    let c = client();
+
+    // /other/b.md resolves to docs/other/b.md which does not exist → 404.
+    let resp = fetch(&c, &server.url("/other/b.md"));
+    assert_status(
+        &resp,
+        404,
+    );
+}

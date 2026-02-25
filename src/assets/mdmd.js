@@ -70,6 +70,21 @@
 }());
 
 /* --------------------------------------------------------------------- *
+ * Status bar: populate mtime display from meta tag                     *
+ * --------------------------------------------------------------------- */
+(function () {
+    var meta = document.querySelector('meta[name="mdmd-mtime"]');
+    var el = document.getElementById('status-mtime');
+    if (!meta || !el) { return; }
+    var secs = parseInt(meta.content, 10);
+    if (!secs) { return; }
+    var d = new Date(secs * 1000);
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    el.textContent = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+                     '  ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}());
+
+/* --------------------------------------------------------------------- *
  * File-change detection: poll /_mdmd/freshness and reveal notice div   *
  * when the server-side mtime changes (bd-38z).                         *
  * --------------------------------------------------------------------- */

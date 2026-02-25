@@ -1341,29 +1341,40 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
             std::fs::canonicalize(&new_root).unwrap_or_else(|_| new_root.clone());
 
         // Warn about network exposure risk (all to stderr).
-        use std::io::IsTerminal;
         eprintln!("WARNING: Serving files from outside your current working directory.");
         eprintln!("serve_root: {}", canonical_new_root.display());
         eprintln!("Any file under this directory may be accessible to others on your network.");
 
+        // Show the interactive prompt only when stdin is a terminal.
+        use std::io::IsTerminal;
         if std::io::stdin().is_terminal() {
             eprint!("Proceed? [y/N] ");
             {
                 use std::io::Write;
                 let _ = std::io::stderr().flush();
             }
-            let mut answer = String::new();
-            {
-                use std::io::BufRead;
-                let _ = std::io::BufReader::new(std::io::stdin().lock()).read_line(&mut answer);
-            }
+        }
+
+        // Attempt to read a confirmation line from stdin regardless of whether
+        // it is a terminal.  When stdin is null (Stdio::null or redirected from
+        // /dev/null) read_line returns 0 bytes (EOF) and we auto-proceed.  When
+        // stdin is a pipe with content the line is read and checked normally.
+        let mut answer = String::new();
+        let n = {
+            use std::io::BufRead;
+            std::io::BufReader::new(std::io::stdin().lock())
+                .read_line(&mut answer)
+                .unwrap_or(0)
+        };
+        if n == 0 {
+            // EOF (null stdin): auto-proceed without confirmation.
+            eprintln!("[info] Non-interactive stdin; proceeding without confirmation.");
+        } else {
             let trimmed = answer.trim().to_lowercase();
             if trimmed != "y" && trimmed != "yes" {
                 eprintln!("Aborted.");
                 std::process::exit(1);
             }
-        } else {
-            eprintln!("[info] Non-interactive stdin; proceeding without confirmation.");
         }
 
         (new_root, canonical_new_root)
@@ -1456,6 +1467,8 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
     // Always print localhost entry URL (with path) and root index URL.
     println!("url:   http://127.0.0.1:{bound_port}{}", state.entry_url_path);
     println!("index: http://127.0.0.1:{bound_port}/");
+    // Remind users that the backlinks index is built once at startup.
+    println!("backlinks: startup-indexed; restart server after file edits to pick up changes");
 
     // Conditionally print Tailscale URLs when available.
     let tailscale_host = tokio::task::spawn_blocking(tailscale_dns_name)
