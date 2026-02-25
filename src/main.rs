@@ -80,6 +80,12 @@ enum Commands {
         /// Starting port number for the HTTP server
         #[arg(long, default_value = "3333")]
         port: u16,
+        /// Do not automatically open the browser after starting the server
+        #[arg(long)]
+        no_open: bool,
+        /// Enable verbose output (show per-request log lines)
+        #[arg(long, short = 'v')]
+        verbose: bool,
     },
 }
 
@@ -116,6 +122,8 @@ enum DispatchMode {
         file: String,
         bind: String,
         port: u16,
+        no_open: bool,
+        verbose: bool,
     },
 }
 
@@ -281,7 +289,7 @@ fn resolve_dispatch_mode() -> DispatchMode {
     match Cli::try_parse() {
         Ok(cli) => match cli.command {
             Commands::View { file } => DispatchMode::View { file },
-            Commands::Serve { file, bind, port } => DispatchMode::Serve { file, bind, port },
+            Commands::Serve { file, bind, port, no_open, verbose } => DispatchMode::Serve { file, bind, port, no_open, verbose },
         },
         Err(clap_err) => {
             // Pass --help, --version, and subcommand-level help through to the full Cli handler.
@@ -310,12 +318,12 @@ fn main() -> io::Result<()> {
             eprintln!("[view] TUI viewer dispatched for: {file}");
             run_tui_file(&file)
         }
-        DispatchMode::Serve { file, bind, port } => {
+        DispatchMode::Serve { file, bind, port, no_open, verbose } => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-            rt.block_on(serve::run_serve(file, bind, port))
+            rt.block_on(serve::run_serve(file, bind, port, no_open, verbose))
         }
     }
 }

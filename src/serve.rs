@@ -1310,7 +1310,7 @@ async fn freshness_handler(State(state): State<Arc<AppState>>, req: Request) -> 
 /// Binds to `bind_addr` starting at `start_port`, retrying on `EADDRINUSE` up
 /// to 100 times.  The server shuts down cleanly when SIGINT (Ctrl+C) is
 /// received.
-pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::Result<()> {
+pub async fn run_serve(file: String, bind_addr: String, start_port: u16, _no_open: bool, _verbose: bool) -> io::Result<()> {
     // Use CWD as the default serve root.
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let canonical_cwd = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
@@ -1408,7 +1408,7 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
 
     // Build the startup backlinks index synchronously before server bind.
     // The index is eventually-stale by design; users must restart the server
-    // after editing files to pick up changes (the println! below reminds them).
+    // after editing files to pick up changes.
     let backlinks = crate::backlinks::build_backlinks_index(&canonical_root);
 
     // Precompute ETags for embedded static assets (stable for the lifetime of
@@ -1460,15 +1460,8 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
         state.entry_url_path
     );
 
-    // Stable startup banner (stdout) for integration/e2e checks.
-    println!("mdmd serve");
-    println!("root:  {}", state.canonical_root.display());
-    println!("entry: {}", state.entry_file.display());
-    // Always print localhost entry URL (with path) and root index URL.
-    println!("url:   http://127.0.0.1:{bound_port}{}", state.entry_url_path);
-    println!("index: http://127.0.0.1:{bound_port}/");
-    // Remind users that the backlinks index is built once at startup.
-    println!("backlinks: startup-indexed; restart server after file edits to pick up changes");
+    // Startup stdout: bare URL(s) only — no labels.
+    println!("http://127.0.0.1:{bound_port}{}", state.entry_url_path);
 
     // Conditionally print Tailscale URLs when available.
     let tailscale_host = tokio::task::spawn_blocking(tailscale_dns_name)
@@ -1476,8 +1469,7 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
         .ok()
         .flatten();
     if let Some(ref host) = tailscale_host {
-        println!("url:   http://{host}:{bound_port}{}", state.entry_url_path);
-        println!("index: http://{host}:{bound_port}/");
+        println!("http://{host}:{bound_port}{}", state.entry_url_path);
     }
 
     axum::serve(listener, app)
