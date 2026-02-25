@@ -304,7 +304,6 @@ fn resolve_dispatch_mode() -> DispatchMode {
 fn main() -> io::Result<()> {
     match resolve_dispatch_mode() {
         DispatchMode::Legacy { file } => {
-            eprintln!("[legacy] TUI viewer dispatched for: {file}");
             run_tui_file(&file)
         }
         DispatchMode::View { file } => {

@@ -879,11 +879,6 @@ fn test_legacy_cli_tui_path() {
     let output = child.wait_with_output().expect("collect legacy output");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("[legacy] TUI viewer dispatched"),
-        "legacy path did not dispatch TUI\nstderr:\n{}",
-        stderr
-    );
-    assert!(
         !stderr.contains("[serve]"),
         "legacy path unexpectedly dispatched serve\nstderr:\n{}",
         stderr
