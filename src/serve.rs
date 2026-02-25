@@ -633,6 +633,7 @@ async fn rich_not_found_response(state: &Arc<AppState>, norm_display: &str) -> R
         "[404] path={norm_display} nearest_parent={}",
         nearest_parent.display()
     );
+    eprintln!("[request] path={norm_display} mode=rich_404 nearest_parent={parent_url}");
 
     Response::builder()
         .status(StatusCode::NOT_FOUND)
@@ -826,6 +827,10 @@ async fn render_directory_index_response(
 
     let etag = compute_etag(body.as_bytes());
     eprintln!("[dir-index] path={url_prefix} entries={}", entries.len());
+    eprintln!(
+        "[request] path={url_prefix} mode=directory_index entries={}",
+        entries.len()
+    );
 
     Response::builder()
         .status(StatusCode::OK)
@@ -1151,6 +1156,7 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
         }
 
         eprintln!("[cache] path={norm_display} etag={etag} status=200");
+        eprintln!("[request] path={norm_display} mode=static_asset");
         let content_type = mime_for_ext(ext);
         Response::builder()
             .status(StatusCode::OK)
@@ -1265,6 +1271,11 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
         .layer(CompressionLayer::new());
 
     eprintln!("[serve] listening on {}:{}", bind_addr, bound_port);
+    eprintln!(
+        "[serve] serve_root={} entry_url_path={}",
+        state.canonical_root.display(),
+        state.entry_url_path
+    );
 
     // Stable startup banner (stdout) for integration/e2e checks.
     println!("mdmd serve");
