@@ -395,8 +395,12 @@ window.mdmd = window.mdmd || {};
     var btn = document.getElementById('indent-toggle');
     if (!btn) { return; }
 
+    /* Reflect initial state in aria-pressed. */
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+
     btn.addEventListener('click', function () {
         active = !active;
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
         if (active) {
             document.documentElement.classList.add(INDENT_CLASS);
             try { localStorage.setItem(INDENT_KEY, INDENT_ON); } catch (_) {}

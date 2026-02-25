@@ -397,12 +397,12 @@ body {
     line-height: 1.4;
 }
 
-/* ---- Theme toggle button ---- */
+/* ---- Theme toggle button / Indentation toggle button ---- */
 
-.theme-toggle {
+.theme-toggle,
+.indent-toggle {
     position: fixed;
     top: 0.75rem;
-    right: 0.75rem;
     background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 6px;
@@ -418,7 +418,16 @@ body {
     transition: color 0.15s, background 0.15s;
 }
 
-.theme-toggle:hover {
+.theme-toggle {
+    right: 0.75rem;
+}
+
+.indent-toggle {
+    right: calc(0.75rem + 36px + 0.5rem);
+}
+
+.theme-toggle:hover,
+.indent-toggle:hover {
     color: var(--color-text);
     background: var(--color-bg);
 }
