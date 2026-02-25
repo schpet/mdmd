@@ -1,5 +1,63 @@
 /* mdmd.css — serve-mode viewer styles */
 
+/* ---- Color tokens ---- */
+
+:root {
+    --color-bg:               #fff;
+    --color-surface:          #f6f8fa;
+    --color-text:             #24292e;
+    --color-text-muted:       #6a737d;
+    --color-text-subtle:      #959da5;
+    --color-border:           #e1e4e8;
+    --color-border-subtle:    #eaecef;
+    --color-code-bg:          rgba(27, 31, 35, 0.05);
+    --color-code-block-bg:    #f6f8fa;
+    --color-table-alt:        #f6f8fa;
+    --color-table-border:     #c6cbd1;
+    --color-blockquote-border:#dfe2e5;
+    --color-notice-bg:        #fff3cd;
+    --color-notice-border:    #ffc107;
+    --color-notice-btn:       #ffc107;
+}
+
+:root[data-theme="dark"] {
+    --color-bg:               rgb(24, 24, 27);
+    --color-surface:          #2c2c30;
+    --color-text:             #e6edf3;
+    --color-text-muted:       #9198a1;
+    --color-text-subtle:      #6e7681;
+    --color-border:           #3d3d44;
+    --color-border-subtle:    #2f2f35;
+    --color-code-bg:          rgba(110, 118, 129, 0.1);
+    --color-code-block-bg:    #2c2c30;
+    --color-table-alt:        #1e1e22;
+    --color-table-border:     #3d3d44;
+    --color-blockquote-border:#3d3d44;
+    --color-notice-bg:        #2d2200;
+    --color-notice-border:    #7a5800;
+    --color-notice-btn:       #b88a00;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --color-bg:               rgb(24, 24, 27);
+        --color-surface:          #2c2c30;
+        --color-text:             #e6edf3;
+        --color-text-muted:       #9198a1;
+        --color-text-subtle:      #6e7681;
+        --color-border:           #3d3d44;
+        --color-border-subtle:    #2f2f35;
+        --color-code-bg:          rgba(110, 118, 129, 0.1);
+        --color-code-block-bg:    #2c2c30;
+        --color-table-alt:        #1e1e22;
+        --color-table-border:     #3d3d44;
+        --color-blockquote-border:#3d3d44;
+        --color-notice-bg:        #2d2200;
+        --color-notice-border:    #7a5800;
+        --color-notice-btn:       #b88a00;
+    }
+}
+
 *, *::before, *::after {
     box-sizing: border-box;
 }
@@ -10,8 +68,8 @@ body {
     font-size: 16px;
     font-weight: 400;
     line-height: 1.6;
-    color: #24292e;
-    background: #fff;
+    color: var(--color-text);
+    background: var(--color-bg);
 }
 
 /* ---- Two-column layout ---- */
@@ -53,7 +111,7 @@ body {
 .toc-sidebar a {
     display: block;
     padding: 0.2rem 0;
-    color: #6a737d;
+    color: var(--color-text-muted);
     text-decoration: none;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -61,11 +119,11 @@ body {
 }
 
 .toc-sidebar a:hover {
-    color: #24292e;
+    color: var(--color-text);
 }
 
 .toc-sidebar a.active {
-    color: #24292e;
+    color: var(--color-text);
     font-weight: 600;
 }
 
@@ -105,7 +163,7 @@ body {
     scroll-margin-top: 0.5rem;
     font-weight: 600;
     line-height: 1.25;
-    color: #24292e;
+    color: var(--color-text);
 }
 
 .content h1,
@@ -119,19 +177,19 @@ body {
 .content h1 {
     font-size: 2.2em;
     letter-spacing: -0.03em;
-    border-bottom: 1px solid #eaecef;
+    border-bottom: 1px solid var(--color-border-subtle);
     padding-bottom: 0.3em;
 }
 
 .content h2 {
     font-size: 1.6em;
-    border-bottom: 1px solid #eaecef;
+    border-bottom: 1px solid var(--color-border-subtle);
     padding-bottom: 0.3em;
 }
 
 .content h6 {
     font-size: 0.85em;
-    color: #6a737d;
+    color: var(--color-text-muted);
 }
 .content h3 { font-size: 1.25em; }
 .content h4 { font-size: 1em; }
@@ -154,7 +212,7 @@ body {
 .content code {
     font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
     font-size: 85%;
-    background: rgba(27, 31, 35, 0.05);
+    background: var(--color-code-bg);
     padding: 0.2em 0.4em;
     border-radius: 3px;
 }
@@ -163,12 +221,12 @@ body {
     font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
     font-size: 85%;
     line-height: 1.45;
-    background: #f6f8fa;
+    background: var(--color-code-block-bg);
     padding: 1rem;
     border-radius: 6px;
     overflow: auto;
     margin-bottom: 1rem;
-    border: 1px solid #e1e4e8;
+    border: 1px solid var(--color-border);
 }
 
 .content pre code {
@@ -180,8 +238,8 @@ body {
 
 .content blockquote {
     padding: 0 1em;
-    color: #6a737d;
-    border-left: 0.25em solid #dfe2e5;
+    color: var(--color-text-muted);
+    border-left: 0.25em solid var(--color-blockquote-border);
     margin: 0 0 1rem 0;
 }
 
@@ -206,16 +264,16 @@ body {
 .content table th,
 .content table td {
     padding: 6px 13px;
-    border: 1px solid #dfe2e5;
+    border: 1px solid var(--color-blockquote-border);
 }
 
 .content table tr {
-    background-color: #fff;
-    border-top: 1px solid #c6cbd1;
+    background-color: var(--color-bg);
+    border-top: 1px solid var(--color-table-border);
 }
 
 .content table tr:nth-child(2n) {
-    background-color: #f6f8fa;
+    background-color: var(--color-table-alt);
 }
 
 /* Lists */
@@ -241,7 +299,7 @@ body {
 
 .content hr {
     border: 0;
-    border-top: 1px solid #eaecef;
+    border-top: 1px solid var(--color-border-subtle);
     margin: 1.5rem 0;
 }
 
@@ -254,8 +312,8 @@ body {
 
 .change-notice {
     display: none;
-    background: #fff3cd;
-    border: 1px solid #ffc107;
+    background: var(--color-notice-bg);
+    border: 1px solid var(--color-notice-border);
     padding: 0.5rem 1rem;
     margin: 0;
     font-size: 0.9rem;
@@ -268,7 +326,7 @@ body {
 }
 
 .change-notice-reload {
-    background: #ffc107;
+    background: var(--color-notice-btn);
     border: none;
     padding: 0.25rem 0.75rem;
     cursor: pointer;
@@ -281,7 +339,7 @@ body {
 .backlinks-panel {
     margin-top: 3rem;
     padding-top: 1.25rem;
-    border-top: 1px solid #eaecef;
+    border-top: 1px solid var(--color-border-subtle);
 }
 
 .content .backlinks-header {
@@ -295,7 +353,7 @@ body {
     padding-bottom: 0;
     margin-top: 0;
     margin-bottom: 0.625rem;
-    color: #6a737d;
+    color: var(--color-text-muted);
     border-bottom: none;
 }
 
@@ -307,7 +365,7 @@ body {
 
 .backlinks-item {
     padding: 0.5rem 0;
-    border-bottom: 1px solid #eaecef;
+    border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .backlinks-item:last-child {
@@ -324,18 +382,56 @@ body {
 .backlinks-fragment {
     font-size: 0.8125rem;
     font-weight: 400;
-    color: #6a737d;
+    color: var(--color-text-muted);
 }
 
 .backlinks-snippet {
     font-size: 0.8125rem;
-    color: #6a737d;
+    color: var(--color-text-muted);
     margin: 0.125rem 0 0;
     font-style: normal;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     line-height: 1.4;
+}
+
+/* ---- Theme toggle button ---- */
+
+.theme-toggle {
+    position: fixed;
+    top: 0.75rem;
+    right: 0.75rem;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    width: 36px;
+    height: 36px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    padding: 0;
+    color: var(--color-text-muted);
+    transition: color 0.15s, background 0.15s;
+}
+
+.theme-toggle:hover {
+    color: var(--color-text);
+    background: var(--color-bg);
+}
+
+/* Show moon in light mode, sun in dark mode */
+.icon-sun  { display: none; }
+.icon-moon { display: block; }
+
+:root[data-theme="dark"] .icon-sun  { display: block; }
+:root[data-theme="dark"] .icon-moon { display: none; }
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .icon-sun  { display: block; }
+    :root:not([data-theme="light"]) .icon-moon { display: none; }
 }
 
 /* ---- Responsive: hide TOC on narrow screens ---- */

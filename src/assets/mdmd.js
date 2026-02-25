@@ -1,4 +1,4 @@
-/* mdmd.js — TOC active-heading highlight and Mermaid initialisation stub */
+/* mdmd.js — TOC active-heading highlight, Mermaid initialisation, and theme toggle */
 (function () {
     'use strict';
 
@@ -9,7 +9,8 @@
      * ready.  When the CDN script is absent the guard keeps this a no-op.   *
      * --------------------------------------------------------------------- */
     if (typeof mermaid !== 'undefined') {
-        mermaid.initialize({ startOnLoad: true, theme: 'default' });
+        var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        mermaid.initialize({ startOnLoad: true, theme: isDark ? 'dark' : 'default' });
     }
 
     /* --------------------------------------------------------------------- *
@@ -66,6 +67,23 @@
 
     headingEls.forEach(function (el) {
         observer.observe(el);
+    });
+}());
+
+/* --------------------------------------------------------------------- *
+ * Theme toggle button                                                    *
+ * --------------------------------------------------------------------- */
+(function () {
+    var btn = document.getElementById('theme-toggle');
+    if (!btn) { return; }
+    btn.addEventListener('click', function () {
+        var current = document.documentElement.getAttribute('data-theme');
+        // Determine effective current theme (account for system default)
+        var effectivelyDark = current === 'dark' ||
+            (!current && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        var next = effectivelyDark ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        try { localStorage.setItem('mdmd-theme', next); } catch (_) {}
     });
 }());
 

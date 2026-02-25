@@ -474,6 +474,18 @@ pub fn build_page_shell(
     // breakage from upstream CDN updates.
     const MERMAID_CDN_URL: &str = "https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js";
 
+    // Inline FOUC-prevention script: reads localStorage before CSS paints.
+    const THEME_INIT_SCRIPT: &str = "\
+<script>(function(){\
+var s=localStorage.getItem('mdmd-theme');\
+var dark=s==='dark'||(!s&&window.matchMedia('(prefers-color-scheme:dark)').matches);\
+if(dark)document.documentElement.setAttribute('data-theme','dark');\
+}());</script>";
+
+    // SVG icons for the theme toggle button.
+    const ICON_MOON: &str = r#"<svg class="icon-moon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>"#;
+    const ICON_SUN: &str = r#"<svg class="icon-sun" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>"#;
+
     format!(
         "<!DOCTYPE html>\n\
 <html lang=\"en\">\n\
@@ -483,9 +495,11 @@ pub fn build_page_shell(
 <title>{title} · mdmd serve</title>\n\
 {mtime_meta}\
 {path_meta}\
+{THEME_INIT_SCRIPT}\n\
 <link rel=\"stylesheet\" href=\"/assets/mdmd.css\">\n\
 </head>\n\
 <body>\n\
+<button id=\"theme-toggle\" class=\"theme-toggle\" aria-label=\"Toggle dark mode\">{ICON_MOON}{ICON_SUN}</button>\n\
 <div id=\"mdmd-change-notice\" class=\"change-notice\" hidden>\n\
 This file has changed on disk.\n\
 <button class=\"change-notice-reload\" onclick=\"location.reload()\">Load latest</button>\n\
@@ -1419,9 +1433,11 @@ mod tests {
             page.contains("&lt;script&gt;"),
             "< in source_display must be html-escaped, got: {page}"
         );
+        // The page shell contains trusted <script> tags (FOUC prevention, Mermaid CDN,
+        // mdmd.js), but user-supplied data must never produce a raw <script>xss</script>.
         assert!(
-            !page.contains("<script>"),
-            "raw <script> tag must not appear in output, got: {page}"
+            !page.contains("<script>xss</script>"),
+            "raw user-supplied <script> payload must be escaped, got: {page}"
         );
         // snippet: &amp; → html_escape converts & → &amp;, producing &amp;amp;
         assert!(
