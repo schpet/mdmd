@@ -463,6 +463,19 @@ pub fn build_page_shell(
     let toc_html = build_toc_html(headings);
     let backlinks_html = build_backlinks_html(ctx.backlinks);
 
+    // Emit freshness meta tags when mtime / url path are available (bd-38z).
+    let mtime_meta = match ctx.file_mtime_secs {
+        Some(secs) => format!("<meta name=\"mdmd-mtime\" content=\"{secs}\">\n"),
+        None => String::new(),
+    };
+    let path_meta = match ctx.page_url_path {
+        Some(p) => format!(
+            "<meta name=\"mdmd-path\" content=\"{}\">\n",
+            html_escape(p)
+        ),
+        None => String::new(),
+    };
+
     // Mermaid is loaded unconditionally to keep shell logic simple.
     // Version is pinned (not @latest) for reproducibility and to avoid silent
     // breakage from upstream CDN updates.
@@ -475,6 +488,8 @@ pub fn build_page_shell(
 <meta charset=\"utf-8\">\n\
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
 <title>{title}</title>\n\
+{mtime_meta}\
+{path_meta}\
 <link rel=\"stylesheet\" href=\"/assets/mdmd.css\">\n\
 </head>\n\
 <body>\n\

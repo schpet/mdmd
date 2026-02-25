@@ -1107,10 +1107,13 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
         let key = crate::backlinks::url_key_from_rel_path(&norm_display);
         let backlinks_slice = state.backlinks.get(&key).map(Vec::as_slice).unwrap_or(&[]);
         eprintln!("[backlinks] key={key} found={}", backlinks_slice.len());
+        let file_mtime_secs = mtime
+            .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
         let shell_ctx = html::PageShellContext {
             backlinks: backlinks_slice,
-            file_mtime_secs: None, // bd-38z wires this up
-            page_url_path: None,   // bd-38z wires this up
+            file_mtime_secs,
+            page_url_path: Some(&norm_display),
         };
         let page = html::build_page_shell(
             &html_body,
@@ -1187,6 +1190,115 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
             .body(Body::from(bytes))
             .expect("serve_handler asset response builder is infallible")
     }
+}
+
+// ---------------------------------------------------------------------------
+// Freshness endpoint
+// ---------------------------------------------------------------------------
+
+/// JSON 404 response used by the freshness endpoint for all error cases.
+fn freshness_404() -> Response {
+    let body = serde_json::json!({ "error": "not found" }).to_string();
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(Body::from(body))
+        .expect("freshness_404 builder is infallible")
+}
+
+/// Handler for `GET /_mdmd/freshness?path=<encoded>`.
+///
+/// Returns `{"mtime":<u64>}` with the file's Unix-epoch modification time.
+/// Returns a JSON 404 on path traversal, outside-root, or file errors.
+async fn freshness_handler(State(state): State<Arc<AppState>>, req: Request) -> Response {
+    // Extract the `path` query parameter.
+    let query = req.uri().query().unwrap_or("");
+    let path_raw = query
+        .split('&')
+        .find_map(|param| {
+            let mut parts = param.splitn(2, '=');
+            match (parts.next(), parts.next()) {
+                (Some("path"), Some(v)) => Some(v),
+                _ => None,
+            }
+        })
+        .unwrap_or("");
+
+    // Step 1: percent-decode.
+    let decoded = match percent_decode(path_raw) {
+        Ok(d) => d,
+        Err(_) => {
+            eprintln!("[freshness] path={path_raw} reason=invalid-percent-encoding");
+            return freshness_404();
+        }
+    };
+
+    // Reject null bytes.
+    if decoded.contains('\0') {
+        eprintln!("[freshness] reason=null-byte");
+        return freshness_404();
+    }
+
+    // Step 2: normalize (handles WITH or WITHOUT leading slash).
+    let normalized = match normalize_path(&decoded) {
+        Some(n) => n,
+        None => {
+            eprintln!("[freshness] reason=path-traversal");
+            return freshness_404();
+        }
+    };
+
+    // Reject empty path (points to root directory, not a file).
+    if normalized == std::path::PathBuf::new() {
+        eprintln!("[freshness] reason=empty-path");
+        return freshness_404();
+    }
+
+    let display_path = normalized.display().to_string();
+
+    // Step 3: resolve via canonical_root and canonicalize.
+    let candidate = state.canonical_root.join(&normalized);
+    let canonical = match tokio::fs::canonicalize(&candidate).await {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("[freshness] path={display_path} reason=canonicalize-failed");
+            return freshness_404();
+        }
+    };
+
+    // Containment check: must stay within canonical_root.
+    if !canonical.starts_with(&state.canonical_root) {
+        eprintln!("[freshness] path={display_path} reason=outside-root");
+        return freshness_404();
+    }
+
+    // Step 4: stat the file.
+    let meta = match tokio::fs::metadata(&canonical).await {
+        Ok(m) => m,
+        Err(_) => {
+            eprintln!("[freshness] path={display_path} reason=metadata-failed");
+            return freshness_404();
+        }
+    };
+
+    // Extract mtime as Unix seconds (0 if unavailable).
+    let mtime_secs = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    eprintln!("[freshness] path={display_path} mtime={mtime_secs}");
+
+    let body = serde_json::json!({ "mtime": mtime_secs }).to_string();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(Body::from(body))
+        .expect("freshness_handler response builder is infallible")
 }
 
 // ---------------------------------------------------------------------------
@@ -1325,6 +1437,7 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
     // brotli based on the client's Accept-Encoding header.  It is added as the
     // outermost layer so it wraps all handler responses.
     let app = Router::new()
+        .route("/_mdmd/freshness", axum::routing::get(freshness_handler))
         .fallback(serve_handler)
         .with_state(state.clone())
         .layer(CompressionLayer::new());

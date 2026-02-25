@@ -68,3 +68,33 @@
         observer.observe(el);
     });
 }());
+
+/* --------------------------------------------------------------------- *
+ * File-change detection: poll /_mdmd/freshness and reveal notice div   *
+ * when the server-side mtime changes (bd-38z).                         *
+ * --------------------------------------------------------------------- */
+(function () {
+    var meta_mtime = document.querySelector('meta[name="mdmd-mtime"]');
+    var meta_path = document.querySelector('meta[name="mdmd-path"]');
+    if (!meta_mtime || !meta_path) { return; }
+    var initial_mtime = parseInt(meta_mtime.content, 10);
+    var page_path = meta_path.content; // norm_display WITHOUT leading slash
+    var failures = 0;
+    var MAX_FAILURES = 3;
+    var interval = setInterval(function () {
+        fetch('/_mdmd/freshness?path=' + encodeURIComponent(page_path))
+            .then(function (r) { return r.ok ? r.json() : Promise.reject('non-200'); })
+            .then(function (data) {
+                failures = 0;
+                if (data.mtime !== initial_mtime) {
+                    clearInterval(interval);
+                    var notice = document.getElementById('mdmd-change-notice');
+                    if (notice) { notice.removeAttribute('hidden'); }
+                }
+            })
+            .catch(function () {
+                failures++;
+                if (failures >= MAX_FAILURES) { clearInterval(interval); }
+            });
+    }, 4000);
+}());
