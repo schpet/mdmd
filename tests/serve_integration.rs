@@ -839,11 +839,27 @@ fn test_serve_startup_stdout_format() {
         "first startup line must be bare local URL http://127.0.0.1:{port}/...\nstdout:\n{stdout}"
     );
 
-    // If a second line exists it must be a bare tailscale URL — no label prefix.
+    // If a second line exists it must be a bare tailscale URL matching
+    // http://[hostname]:[port]/[path] — no label prefix.
     if let Some(second) = lines.get(1) {
+        let after_scheme = second.strip_prefix("http://").unwrap_or("");
+        let colon_pos = after_scheme.find(':');
+        let valid_url = match colon_pos {
+            Some(pos) => {
+                let after_colon = &after_scheme[pos + 1..];
+                let slash_pos = after_colon.find('/');
+                match slash_pos {
+                    Some(sp) => {
+                        sp > 0 && after_colon[..sp].chars().all(|c| c.is_ascii_digit())
+                    }
+                    None => false,
+                }
+            }
+            None => false,
+        };
         assert!(
-            second.starts_with("http://") && !second.starts_with("url:"),
-            "second startup line must be bare http:// URL (no 'url:' prefix)\ngot: {second:?}\nstdout:\n{stdout}"
+            valid_url,
+            "second startup line must be bare http://hostname:port/... URL\ngot: {second:?}\nstdout:\n{stdout}"
         );
     }
 
@@ -858,11 +874,14 @@ fn test_serve_startup_stdout_format() {
         }
     }
 
-    // Default mode (no --verbose): tailscale diagnostics must not appear on stderr.
-    assert!(
-        !stderr.contains("[tailscale]"),
-        "stderr must not contain [tailscale] diagnostics in default mode\nstderr:\n{stderr}"
-    );
+    // Default mode (no --verbose): informational startup diagnostics must not
+    // appear on stderr for any of the known diagnostic categories.
+    for category in ["[serve]", "[bind]", "[tailscale]", "[browser]"] {
+        assert!(
+            !stderr.contains(category),
+            "stderr must not contain {category} diagnostics in default mode\nstderr:\n{stderr}"
+        );
+    }
 }
 
 #[test]
@@ -1701,8 +1720,8 @@ fn test_serve_symlink_outside_root_denied_with_outside_root_log() {
 // bd-26u: backlinks startup stdout/stderr
 // ---------------------------------------------------------------------------
 
-/// Verifies that the backlinks startup hint appears in stdout and the scan
-/// count line appears in stderr after server startup.
+/// Verifies that the backlinks scan count appears in stderr after server startup.
+/// Stdout must remain URL-only (no backlinks diagnostic lines).
 #[test]
 fn test_backlinks_startup_stdout() {
     let fixture = Fixture::new(FixtureOptions::default());
@@ -1715,10 +1734,13 @@ fn test_backlinks_startup_stdout() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
+    // Stdout must be URL-only — no backlinks diagnostic lines.
     assert!(
-        stdout.contains("backlinks: startup-indexed"),
-        "restart reminder missing from stdout\nstdout:\n{stdout}"
+        !stdout.contains("backlinks:"),
+        "stdout must not contain backlinks diagnostic lines (URL-only contract)\nstdout:\n{stdout}"
     );
+
+    // The backlinks scan count must appear on stderr.
     assert!(
         stderr.contains("[backlinks] indexed files="),
         "scan count missing from stderr\nstderr:\n{stderr}"
