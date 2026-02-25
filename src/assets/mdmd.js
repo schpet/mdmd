@@ -97,7 +97,8 @@
  *   1. Read persistence from localStorage                               *
  *   2. Apply / remove root class on <html>  (idempotent with FOUC      *
  *      inline script that ran before first paint)                       *
- *   3. Bind button click handler                                        *
+ *   3. Apply DOM outline transform if active (bd-1zl.3)                *
+ *   4. Bind button click handler                                        *
  *                                                                       *
  * State contract (matches INDENT_INIT_SCRIPT in html.rs):              *
  *   Storage key : mdmd-indent-hierarchy                                 *
@@ -113,16 +114,113 @@
     var INDENT_OFF   = 'off';
     var INDENT_CLASS = 'indent-hierarchy-on';
 
+    /* --- bd-1zl.3: DOM outline section builder ----------------------------- *
+     *                                                                         *
+     * Traverses direct children of main.content in document order and wraps  *
+     * heading-delimited groups in generated <section> elements:               *
+     *                                                                         *
+     *   <section class="indent-section"                                       *
+     *            data-indent-generated="1"                                    *
+     *            data-depth="N">                                              *
+     *                                                                         *
+     * Algorithm (bd-1zl.3.1 — heading-stack traversal):                      *
+     *   - Snapshot children as an Array (flat NodeList from comrak output).   *
+     *   - Scan linearly; each heading (H1..H6) opens a new section group.    *
+     *   - Level stack [{level, sectionEl}] tracks open sections:             *
+     *       1. Pop entries where stack.top.level >= current heading level.    *
+     *       2. Stack top is the new section's parent (mainEl if empty).      *
+     *       3. Push {level, sectionEl: newWrapper}.                          *
+     *   - depth = stack.length after popping, before pushing (1-based).      *
+     *   - Pre-heading nodes (depth 0) remain in mainEl untouched.            *
+     *   - Post-heading non-heading nodes move into the topmost section.      *
+     *   - Guard: if no headings exist, return immediately (no-op).           *
+     *                                                                         *
+     * Materialization (bd-1zl.3.2):                                          *
+     *   - Wrapper inserted at heading's current position when parent=mainEl. *
+     *   - Wrapper appended to parent section when nesting.                   *
+     *   - Heading node moved into wrapper (never cloned, id/attrs preserved). *
+     *   - Sets mainEl.dataset.indentActive = '1' on success.                *
+     * ----------------------------------------------------------------------- */
+    function buildOutlineSections(mainEl) {
+        var children = Array.from(mainEl.children);
+
+        /* Guard: no-op when the page has no headings. */
+        var hasHeading = children.some(function (c) {
+            var t = c.tagName;
+            return t === 'H1' || t === 'H2' || t === 'H3' ||
+                   t === 'H4' || t === 'H5' || t === 'H6';
+        });
+        if (!hasHeading) { return; }
+
+        var stack = []; /* [{level: number, sectionEl: Element}] */
+        var firstHeadingFound = false;
+
+        for (var i = 0; i < children.length; i++) {
+            var node = children[i];
+            var tag  = node.tagName;
+            var lvl  = tag === 'H1' ? 1 : tag === 'H2' ? 2 : tag === 'H3' ? 3 :
+                       tag === 'H4' ? 4 : tag === 'H5' ? 5 : tag === 'H6' ? 6 : 0;
+
+            if (lvl === 0) {
+                /* Non-heading node. */
+                if (!firstHeadingFound) { continue; } /* depth-0: leave in place */
+                /* Move into the current topmost section. */
+                stack[stack.length - 1].sectionEl.appendChild(node);
+                continue;
+            }
+
+            /* Heading node — open a new section. */
+            firstHeadingFound = true;
+
+            /* Close sections at same or higher level (bd-1zl.3.1 step 1). */
+            while (stack.length > 0 && stack[stack.length - 1].level >= lvl) {
+                stack.pop();
+            }
+
+            var depth  = stack.length + 1;
+            var parent = stack.length > 0 ? stack[stack.length - 1].sectionEl : mainEl;
+
+            /* Create wrapper (bd-1zl.3.2 contract). */
+            var wrapper = document.createElement('section');
+            wrapper.className = 'indent-section';
+            wrapper.setAttribute('data-indent-generated', '1');
+            wrapper.setAttribute('data-depth', String(depth));
+
+            /* Insert at heading's current DOM position (mainEl parent) or
+             * append to parent section (nested case). */
+            if (parent === mainEl) {
+                mainEl.insertBefore(wrapper, node);
+            } else {
+                parent.appendChild(wrapper);
+            }
+
+            /* Move heading into wrapper (no clone, preserves id/class/data). */
+            wrapper.appendChild(node);
+
+            stack.push({ level: lvl, sectionEl: wrapper });
+        }
+
+        /* Mark transform complete so idempotency guards can check this flag. */
+        mainEl.dataset.indentActive = '1';
+    }
+
     /* Read saved preference; normalize unknown/missing to off. */
     var saved;
     try { saved = localStorage.getItem(INDENT_KEY); } catch (_) { saved = null; }
     var active = saved === INDENT_ON;
+
+    var mainEl = document.querySelector('main.content');
 
     /* Apply class (idempotent — FOUC script already ran). */
     if (active) {
         document.documentElement.classList.add(INDENT_CLASS);
     } else {
         document.documentElement.classList.remove(INDENT_CLASS);
+    }
+
+    /* Apply DOM outline transform on page load if the mode is already active. */
+    if (active && mainEl && !mainEl.dataset.indentActive) {
+        buildOutlineSections(mainEl);
     }
 
     /* Bind toggle button once it exists (added by bd-1zl.2). */
@@ -134,6 +232,9 @@
         if (active) {
             document.documentElement.classList.add(INDENT_CLASS);
             try { localStorage.setItem(INDENT_KEY, INDENT_ON); } catch (_) {}
+            if (mainEl && !mainEl.dataset.indentActive) {
+                buildOutlineSections(mainEl);
+            }
         } else {
             document.documentElement.classList.remove(INDENT_CLASS);
             try { localStorage.setItem(INDENT_KEY, INDENT_OFF); } catch (_) {}
