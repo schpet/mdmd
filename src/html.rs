@@ -35,6 +35,28 @@ pub struct HeadingEntry {
     pub anchor_id: String,
 }
 
+/// Context passed to [`build_page_shell`] to avoid repeated signature churn as
+/// new per-page metadata fields are added.
+///
+/// Fields that are not yet wired up (e.g. `file_mtime_secs`, `page_url_path`
+/// from bd-38z) default to `None`; callers that do not have those values should
+/// pass `None` until the relevant subsystem is implemented.
+// `file_mtime_secs` and `page_url_path` are reserved for bd-38z and are read
+// by that subsystem once it is wired in.
+#[allow(dead_code)]
+pub struct PageShellContext<'a> {
+    /// Inbound backlinks for this page from the startup index.
+    /// Pass `&[]` for non-markdown pages, static assets, and error responses.
+    pub backlinks: &'a [BacklinkRef],
+    /// Unix timestamp (seconds) of the file's last modification, for freshness
+    /// polling (bd-38z).  `None` disables change detection on this page.
+    pub file_mtime_secs: Option<u64>,
+    /// Root-relative URL path for this page (e.g. `/docs/guide.md`), used to
+    /// emit a `<meta>` tag for the JS freshness check (bd-38z).  `None` omits
+    /// the tag.
+    pub page_url_path: Option<&'a str>,
+}
+
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
@@ -409,8 +431,8 @@ pub fn render_markdown(
 /// - `file_path`: absolute path to the source `.md` file (for display).
 /// - `serve_root`: root directory of the serve tree (used to compute the
 ///   relative display path shown in the header).
-/// - `backlinks`: inbound [`BacklinkRef`]s for this page from the startup index.
-///   Pass `&[]` for non-markdown pages, static assets, and error responses.
+/// - `ctx`: per-page metadata including backlinks, mtime, and URL path.
+///   Pass `&PageShellContext { backlinks: &[], .. }` for pages without backlinks.
 ///
 /// # Returns
 /// A complete `text/html` document ready to send to the browser.
@@ -419,7 +441,7 @@ pub fn build_page_shell(
     headings: &[HeadingEntry],
     file_path: &Path,
     serve_root: &Path,
-    backlinks: &[BacklinkRef],
+    ctx: &PageShellContext,
 ) -> String {
     // Relative path for the header, falling back to the full path.
     let display_path = file_path
@@ -439,7 +461,7 @@ pub fn build_page_shell(
     let display_path_escaped = html_escape(&display_path);
     let content_html = inject_heading_ids(body_html, headings);
     let toc_html = build_toc_html(headings);
-    let backlinks_html = build_backlinks_html(backlinks);
+    let backlinks_html = build_backlinks_html(ctx.backlinks);
 
     // Mermaid is loaded unconditionally to keep shell logic simple.
     // Version is pinned (not @latest) for reproducibility and to avoid silent
@@ -460,13 +482,17 @@ pub fn build_page_shell(
 <span class=\"brand\">mdmd serve</span>\n\
 <span class=\"file-path\">{display_path_escaped}</span>\n\
 </header>\n\
+<div id=\"mdmd-change-notice\" class=\"change-notice\" hidden>\n\
+This file has changed on disk.\n\
+<button class=\"change-notice-reload\" onclick=\"location.reload()\">Load latest</button>\n\
+</div>\n\
+{backlinks_html}\
 <div class=\"layout\">\n\
 <nav class=\"toc-sidebar\">\n\
 {toc_html}</nav>\n\
 <main class=\"content\">\n\
 {content_html}</main>\n\
 </div>\n\
-{backlinks_html}\
 <script src=\"{MERMAID_CDN_URL}\"></script>\n\
 <script src=\"/assets/mdmd.js\"></script>\n\
 </body>\n\
@@ -476,25 +502,44 @@ pub fn build_page_shell(
 
 /// Build the HTML fragment for the backlinks panel.
 ///
-/// When `backlinks` is empty the panel reads "No backlinks yet."  Otherwise
-/// each [`BacklinkRef`] is rendered as a list item with a link to the source
-/// document and a short context snippet.
+/// When `backlinks` is empty, the panel reads "No backlinks yet." with the
+/// `backlinks-panel--empty` modifier class.  Otherwise each [`BacklinkRef`] is
+/// rendered as a list item with a source link (including fragment when present),
+/// an optional fragment hint span, and a context snippet.
 fn build_backlinks_html(backlinks: &[BacklinkRef]) -> String {
     if backlinks.is_empty() {
-        return "<section class=\"backlinks\">\n\
-<h2>Backlinks</h2>\n\
-<p>No backlinks yet.</p>\n\
+        return "<section class=\"backlinks-panel backlinks-panel--empty\" aria-label=\"Backlinks\">\n\
+<p class=\"backlinks-empty-text\">No backlinks yet.</p>\n\
 </section>\n"
             .to_owned();
     }
 
-    let mut html = String::from("<section class=\"backlinks\">\n<h2>Backlinks</h2>\n<ul>\n");
+    let count = backlinks.len();
+    let mut html = format!(
+        "<section class=\"backlinks-panel\" aria-label=\"Backlinks\">\n\
+<h2 class=\"backlinks-header\">Backlinks ({count})</h2>\n\
+<ul class=\"backlinks-list\">\n"
+    );
     for bl in backlinks {
-        let href = html_escape(&bl.source_url_path);
+        let base_href = html_escape(&bl.source_url_path);
+        let href = match &bl.target_fragment {
+            Some(frag) => format!("{}#{}", base_href, html_escape(frag)),
+            None => base_href,
+        };
         let label = html_escape(&bl.source_display);
         let snippet = html_escape(&bl.snippet);
+        let fragment_span = match &bl.target_fragment {
+            Some(frag) => format!(
+                "<span class=\"backlinks-fragment\"> \u{00a7} {}</span>",
+                html_escape(frag)
+            ),
+            None => String::new(),
+        };
         html.push_str(&format!(
-            "<li><a href=\"{href}\">{label}</a> — <span class=\"snippet\">{snippet}</span></li>\n"
+            "<li class=\"backlinks-item\">\n\
+<a class=\"backlinks-source\" href=\"{href}\">{label}</a>{fragment_span}\n\
+<p class=\"backlinks-snippet\">{snippet}</p>\n\
+</li>\n"
         ));
     }
     html.push_str("</ul>\n</section>\n");
@@ -747,7 +792,7 @@ mod tests {
             &headings,
             Path::new("/root/doc.md"),
             Path::new("/root"),
-            &[],
+            &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None },
         );
         assert!(
             page.contains("<nav class=\"toc-sidebar\">"),
@@ -760,7 +805,7 @@ mod tests {
     #[test]
     fn page_shell_contains_script_tag() {
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &[]);
+        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None });
         assert!(
             page.contains("<script src=\"/assets/mdmd.js\">"),
             "script tag present"
@@ -770,7 +815,7 @@ mod tests {
     #[test]
     fn page_shell_contains_pinned_mermaid_cdn_script() {
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &[]);
+        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None });
         assert!(
             page.contains(
                 "<script src=\"https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js\">"
@@ -782,7 +827,7 @@ mod tests {
     #[test]
     fn page_shell_contains_css_link() {
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &[]);
+        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None });
         assert!(
             page.contains("href=\"/assets/mdmd.css\""),
             "css link present"
@@ -797,7 +842,7 @@ mod tests {
             &headings,
             Path::new("/docs/guide/intro.md"),
             Path::new("/docs"),
-            &[],
+            &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None },
         );
         assert!(
             page.contains("guide/intro.md"),
@@ -809,7 +854,7 @@ mod tests {
     fn page_shell_heading_ids_injected() {
         let input = "# Title\n\n## Sub\n";
         let (html_body, headings) = render(input);
-        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &[]);
+        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None });
         assert!(
             page.contains("<h1 id=\"title\">"),
             "h1 id injected in content"
@@ -1095,6 +1140,120 @@ mod tests {
         assert!(
             html.contains("href=\"/docs/page.md\""),
             "expected /docs/page.md for root-level entry, got: {html}"
+        );
+    }
+
+    // --- bd-1fc: backlinks panel, change-notice, and CSS audit ---
+    //
+    // 'Back to' audit: grep of serve.rs and html.rs found no 'back to' / 'back-to'
+    // UI strings or HTML patterns.  All occurrences are code comments that say
+    // "fall back to …" which are not UI artifacts.  No removal required.
+
+    #[test]
+    fn backlinks_panel_populated() {
+        let bls = vec![
+            BacklinkRef {
+                source_url_path: "/docs/a.md".to_owned(),
+                source_display: "Doc A".to_owned(),
+                snippet: "see <also> here".to_owned(),
+                target_fragment: None,
+            },
+            BacklinkRef {
+                source_url_path: "/docs/b.md".to_owned(),
+                source_display: "Doc B".to_owned(),
+                snippet: "another ref".to_owned(),
+                target_fragment: Some("section-1".to_owned()),
+            },
+        ];
+        let (html_body, headings) = render("# Hi\n");
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext { backlinks: &bls, file_mtime_secs: None, page_url_path: None },
+        );
+        // Count in header
+        assert!(
+            page.contains("Backlinks (2)"),
+            "populated panel must show count, got: {page}"
+        );
+        // Source link for item without fragment
+        assert!(
+            page.contains("href=\"/docs/a.md\""),
+            "first backlink href, got: {page}"
+        );
+        // Source link for item with fragment
+        assert!(
+            page.contains("href=\"/docs/b.md#section-1\""),
+            "second backlink href with fragment, got: {page}"
+        );
+        // Fragment hint span
+        assert!(
+            page.contains("backlinks-fragment"),
+            "fragment span class, got: {page}"
+        );
+        // HTML-escaped snippet
+        assert!(
+            page.contains("see &lt;also&gt; here"),
+            "snippet must be html-escaped, got: {page}"
+        );
+        // Section element
+        assert!(
+            page.contains("<section class=\"backlinks-panel\""),
+            "section element with correct class, got: {page}"
+        );
+    }
+
+    #[test]
+    fn backlinks_panel_empty() {
+        let (html_body, headings) = render("# Hi\n");
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None },
+        );
+        assert!(
+            page.contains("No backlinks yet."),
+            "empty panel text, got: {page}"
+        );
+        assert!(
+            !page.contains("Backlinks ("),
+            "empty panel must not show count, got: {page}"
+        );
+        assert!(
+            page.contains("backlinks-panel--empty"),
+            "empty modifier class, got: {page}"
+        );
+    }
+
+    #[test]
+    fn change_notice_present_and_hidden() {
+        let (html_body, headings) = render("# Hi\n");
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None },
+        );
+        assert!(
+            page.contains("id=\"mdmd-change-notice\""),
+            "change notice id, got: {page}"
+        );
+        assert!(
+            page.contains("hidden"),
+            "change notice hidden attribute, got: {page}"
+        );
+    }
+
+    #[test]
+    fn scroll_margin_top_in_css() {
+        assert!(
+            crate::web_assets::CSS.contains("scroll-margin-top"),
+            "CSS must contain scroll-margin-top for heading anchor offset"
         );
     }
 }

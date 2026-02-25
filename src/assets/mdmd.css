@@ -263,6 +263,90 @@ body {
     max-width: 100%;
 }
 
+/* ---- Heading anchor scroll offset ---- */
+
+/* Prevent sticky header from covering fragment-jump targets. */
+.content h1[id],
+.content h2[id],
+.content h3[id],
+.content h4[id],
+.content h5[id],
+.content h6[id] {
+    scroll-margin-top: 4rem;
+}
+
+/* ---- File change notice ---- */
+
+.change-notice {
+    display: none;
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    padding: 0.5rem 1rem;
+    margin: 0;
+    font-size: 0.9rem;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.change-notice:not([hidden]) {
+    display: flex;
+}
+
+.change-notice-reload {
+    background: #ffc107;
+    border: none;
+    padding: 0.25rem 0.75rem;
+    cursor: pointer;
+    border-radius: 3px;
+    font-weight: 600;
+}
+
+/* ---- Backlinks panel ---- */
+
+.backlinks-panel {
+    padding: 0.75rem 1.5rem;
+    border-bottom: 1px solid var(--border-color, #e0e0e0);
+}
+
+.backlinks-header {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #666;
+    margin: 0 0 0.5rem;
+}
+
+.backlinks-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.backlinks-item {
+    margin: 0.4rem 0;
+}
+
+.backlinks-source {
+    font-weight: 500;
+}
+
+.backlinks-fragment {
+    color: #888;
+    font-size: 0.85rem;
+}
+
+.backlinks-snippet {
+    font-size: 0.85rem;
+    color: #555;
+    margin: 0.1rem 0 0;
+    font-style: italic;
+}
+
+.backlinks-empty-text {
+    color: #888;
+    font-size: 0.85rem;
+    margin: 0;
+}
+
 /* ---- Responsive: hide TOC on narrow screens ---- */
 
 @media (max-width: 768px) {

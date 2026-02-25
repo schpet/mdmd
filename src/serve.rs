@@ -1107,12 +1107,17 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
         let key = crate::backlinks::url_key_from_rel_path(&norm_display);
         let backlinks_slice = state.backlinks.get(&key).map(Vec::as_slice).unwrap_or(&[]);
         eprintln!("[backlinks] key={key} found={}", backlinks_slice.len());
+        let shell_ctx = html::PageShellContext {
+            backlinks: backlinks_slice,
+            file_mtime_secs: None, // bd-38z wires this up
+            page_url_path: None,   // bd-38z wires this up
+        };
         let page = html::build_page_shell(
             &html_body,
             &headings,
             &canonical,
             &state.canonical_root,
-            backlinks_slice,
+            &shell_ctx,
         );
 
         let etag = compute_etag(page.as_bytes());
