@@ -384,6 +384,11 @@ window.mdmd = window.mdmd || {};
     /* Apply DOM outline transform on page load if the mode is already active. */
     if (active && mainEl && !mainEl.dataset.indentActive) {
         buildOutlineSections(mainEl);
+        /* Rebind TOC observer after ON-path DOM restructuring (bd-1zl.5). */
+        var nsInit = window.mdmd;
+        if (nsInit && typeof nsInit.rebindHeadingObserver === 'function') {
+            nsInit.rebindHeadingObserver();
+        }
     }
 
     /* Bind toggle button once it exists (added by bd-1zl.2). */
@@ -398,6 +403,11 @@ window.mdmd = window.mdmd || {};
             /* ON guard (bd-1zl.4.2): skip transform if already applied. */
             if (mainEl && !mainEl.dataset.indentActive) {
                 buildOutlineSections(mainEl);
+                /* Rebind TOC observer after ON-path DOM restructuring (bd-1zl.5). */
+                var nsOn = window.mdmd;
+                if (nsOn && typeof nsOn.rebindHeadingObserver === 'function') {
+                    nsOn.rebindHeadingObserver();
+                }
             }
         } else {
             /* OFF path uses transition-aware sequencing with unwrap (bd-1zl.4.1).
