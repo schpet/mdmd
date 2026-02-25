@@ -114,46 +114,42 @@
     var INDENT_OFF   = 'off';
     var INDENT_CLASS = 'indent-hierarchy-on';
 
-    /* --- bd-1zl.3: DOM outline section builder ----------------------------- *
-     *                                                                         *
-     * Traverses direct children of main.content in document order and wraps  *
-     * heading-delimited groups in generated <section> elements:               *
-     *                                                                         *
-     *   <section class="indent-section"                                       *
-     *            data-indent-generated="1"                                    *
-     *            data-depth="N">                                              *
-     *                                                                         *
-     * Algorithm (bd-1zl.3.1 — heading-stack traversal):                      *
-     *   - Snapshot children as an Array (flat NodeList from comrak output).   *
+    /* --- bd-1zl.3.1: Heading-stack traversal -------------------------------- *
+     *                                                                          *
+     * Scans direct children of mainEl in document order and produces a plan  *
+     * describing which generated section wrappers to create and which DOM     *
+     * nodes belong in each wrapper.  No DOM mutations are performed here.     *
+     *                                                                          *
+     * Returns [] when no headings are found (no-op guard).                   *
+     * Otherwise returns an ordered array of plan entries:                     *
+     *   { sectionEl, depth, parent, children }                               *
+     *                                                                          *
+     * Algorithm:                                                               *
+     *   - Snapshot children via Array.from (flat NodeList from comrak).       *
      *   - Scan linearly; each heading (H1..H6) opens a new section group.    *
      *   - Level stack [{level, sectionEl}] tracks open sections:             *
      *       1. Pop entries where stack.top.level >= current heading level.    *
-     *       2. Stack top is the new section's parent (mainEl if empty).      *
-     *       3. Push {level, sectionEl: newWrapper}.                          *
+     *       2. Stack top is the new section's parent (mainEl if empty).       *
+     *       3. Push {level, sectionEl: newWrapper}.                           *
      *   - depth = stack.length after popping, before pushing (1-based).      *
      *   - Pre-heading nodes (depth 0) remain in mainEl untouched.            *
-     *   - Post-heading non-heading nodes move into the topmost section.      *
-     *   - Guard: if no headings exist, return immediately (no-op).           *
-     *                                                                         *
-     * Materialization (bd-1zl.3.2):                                          *
-     *   - Wrapper inserted at heading's current position when parent=mainEl. *
-     *   - Wrapper appended to parent section when nesting.                   *
-     *   - Heading node moved into wrapper (never cloned, id/attrs preserved). *
-     *   - Sets mainEl.dataset.indentActive = '1' on success.                *
+     *   - Post-heading non-heading nodes are collected into the current       *
+     *     topmost section's children list.                                    *
      * ----------------------------------------------------------------------- */
-    function buildOutlineSections(mainEl) {
+    function planOutlineSections(mainEl) {
         var children = Array.from(mainEl.children);
 
-        /* Guard: no-op when the page has no headings. */
+        /* Guard: return empty plan when the page has no headings. */
         var hasHeading = children.some(function (c) {
             var t = c.tagName;
             return t === 'H1' || t === 'H2' || t === 'H3' ||
                    t === 'H4' || t === 'H5' || t === 'H6';
         });
-        if (!hasHeading) { return; }
+        if (!hasHeading) { return []; }
 
-        var stack = []; /* [{level: number, sectionEl: Element}] */
-        var firstHeadingFound = false;
+        var plan         = [];
+        var stack        = []; /* [{level: number, sectionEl: Element}] */
+        var currentEntry = null;
 
         for (var i = 0; i < children.length; i++) {
             var node = children[i];
@@ -163,16 +159,12 @@
 
             if (lvl === 0) {
                 /* Non-heading node. */
-                if (!firstHeadingFound) { continue; } /* depth-0: leave in place */
-                /* Move into the current topmost section. */
-                stack[stack.length - 1].sectionEl.appendChild(node);
+                if (currentEntry === null) { continue; } /* depth-0: leave in place */
+                currentEntry.children.push(node);        /* collect into current section */
                 continue;
             }
 
-            /* Heading node — open a new section. */
-            firstHeadingFound = true;
-
-            /* Close sections at same or higher level (bd-1zl.3.1 step 1). */
+            /* Heading node — close sections at same or higher level. */
             while (stack.length > 0 && stack[stack.length - 1].level >= lvl) {
                 stack.pop();
             }
@@ -180,28 +172,72 @@
             var depth  = stack.length + 1;
             var parent = stack.length > 0 ? stack[stack.length - 1].sectionEl : mainEl;
 
-            /* Create wrapper (bd-1zl.3.2 contract). */
+            /* Create wrapper element (not yet inserted into DOM). */
             var wrapper = document.createElement('section');
             wrapper.className = 'indent-section';
             wrapper.setAttribute('data-indent-generated', '1');
             wrapper.setAttribute('data-depth', String(depth));
 
-            /* Insert at heading's current DOM position (mainEl parent) or
-             * append to parent section (nested case). */
-            if (parent === mainEl) {
-                mainEl.insertBefore(wrapper, node);
-            } else {
-                parent.appendChild(wrapper);
-            }
-
-            /* Move heading into wrapper (no clone, preserves id/class/data). */
-            wrapper.appendChild(node);
+            var entry = {
+                sectionEl : wrapper,
+                depth     : depth,
+                parent    : parent,
+                children  : [node] /* heading is always the first child */
+            };
+            plan.push(entry);
+            currentEntry = entry;
 
             stack.push({ level: lvl, sectionEl: wrapper });
         }
 
+        return plan;
+    }
+
+    /* --- bd-1zl.3.2: Materialization (consume plan, write DOM) ------------- *
+     *                                                                          *
+     * Inserts generated section wrappers and moves planned nodes into them.   *
+     *                                                                          *
+     *   - Top-level sections (parent === mainEl): inserted at the heading's   *
+     *     current DOM position via insertBefore.                               *
+     *   - Nested sections (parent is another sectionEl): appended to parent.  *
+     *   - All children (heading first, then content) are moved into the       *
+     *     wrapper via appendChild — no cloning, ids/attrs preserved.          *
+     *   - Sets mainEl.dataset.indentActive = '1' on success.                 *
+     * ----------------------------------------------------------------------- */
+    function materializeOutlineSections(mainEl, plan) {
+        if (plan.length === 0) { return; }
+
+        plan.forEach(function (entry) {
+            var sectionEl = entry.sectionEl;
+            var parent    = entry.parent;
+            var heading   = entry.children[0];
+
+            /* Insert wrapper at heading's original position or append to parent. */
+            if (parent === mainEl) {
+                mainEl.insertBefore(sectionEl, heading);
+            } else {
+                parent.appendChild(sectionEl);
+            }
+
+            /* Move all planned nodes into wrapper (heading + content). */
+            entry.children.forEach(function (child) {
+                sectionEl.appendChild(child);
+            });
+        });
+
         /* Mark transform complete so idempotency guards can check this flag. */
         mainEl.dataset.indentActive = '1';
+    }
+
+    /* --- bd-1zl.3: DOM outline section builder ----------------------------- *
+     *                                                                          *
+     * Composes traversal and materialization:                                  *
+     *   1. planOutlineSections        — compute section structure (bd-1zl.3.1)*
+     *   2. materializeOutlineSections — write DOM changes       (bd-1zl.3.2) *
+     * ----------------------------------------------------------------------- */
+    function buildOutlineSections(mainEl) {
+        var plan = planOutlineSections(mainEl);
+        materializeOutlineSections(mainEl, plan);
     }
 
     /* --- bd-1zl.4.1: Canonical unwrap (OFF restore path) ------------------- *
