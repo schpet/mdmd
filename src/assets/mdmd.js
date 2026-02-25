@@ -88,6 +88,12 @@
 }());
 
 /* --------------------------------------------------------------------- *
+ * Shared namespace for cross-IIFE integration hooks                    *
+ * bd-1zl.5.1 will assign rebindHeadingObserver here.                  *
+ * --------------------------------------------------------------------- */
+window.mdmd = window.mdmd || {};
+
+/* --------------------------------------------------------------------- *
  * Indentation hierarchy toggle (bd-1zl)                                *
  *                                                                       *
  * Runs unconditionally — no early-return on heading count — so pages   *
@@ -274,6 +280,15 @@
         });
 
         delete mainEl.dataset.indentActive;
+
+        /* Defensive observer rebind (bd-1zl.5.1) — no-op until that task
+         * assigns window.mdmd.rebindHeadingObserver.  Heading element
+         * references held by the TOC observer become stale after unwrap;
+         * calling rebind ensures the observer tracks the live DOM nodes. */
+        var ns = window.mdmd;
+        if (ns && typeof ns.rebindHeadingObserver === 'function') {
+            ns.rebindHeadingObserver();
+        }
     }
 
     /* --- bd-1zl.4.1: Transition-aware OFF sequencing ----------------------- *
