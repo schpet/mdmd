@@ -443,12 +443,6 @@ pub fn build_page_shell(
     serve_root: &Path,
     ctx: &PageShellContext,
 ) -> String {
-    // Relative path for the header, falling back to the full path.
-    let display_path = file_path
-        .strip_prefix(serve_root)
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| file_path.display().to_string());
-
     // Page title: first H1 text, then file stem, then a safe default.
     let title_raw = headings
         .iter()
@@ -458,7 +452,6 @@ pub fn build_page_shell(
         .unwrap_or("Document");
 
     let title = html_escape(title_raw);
-    let display_path_escaped = html_escape(&display_path);
     let content_html = inject_heading_ids(body_html, headings);
     let toc_html = build_toc_html(headings);
     let backlinks_html = build_backlinks_html(ctx.backlinks);
@@ -487,7 +480,7 @@ pub fn build_page_shell(
 <head>\n\
 <meta charset=\"utf-8\">\n\
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-<title>{title} \u{25c6} mdmd serve</title>\n\
+<title>{title} · mdmd serve</title>\n\
 {mtime_meta}\
 {path_meta}\
 <link rel=\"stylesheet\" href=\"/assets/mdmd.css\">\n\
@@ -504,10 +497,6 @@ This file has changed on disk.\n\
 {content_html}\
 {backlinks_html}</main>\n\
 </div>\n\
-<footer class=\"status-bar\">\n\
-<span class=\"status-path\">{display_path_escaped}</span>\n\
-<span class=\"status-mtime\" id=\"status-mtime\"></span>\n\
-</footer>\n\
 <script src=\"{MERMAID_CDN_URL}\"></script>\n\
 <script src=\"/assets/mdmd.js\"></script>\n\
 </body>\n\
@@ -842,22 +831,6 @@ mod tests {
         assert!(
             page.contains("href=\"/assets/mdmd.css\""),
             "css link present"
-        );
-    }
-
-    #[test]
-    fn page_shell_shows_relative_file_path() {
-        let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(
-            &html_body,
-            &headings,
-            Path::new("/docs/guide/intro.md"),
-            Path::new("/docs"),
-            &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None },
-        );
-        assert!(
-            page.contains("guide/intro.md"),
-            "relative path shown in header"
         );
     }
 
@@ -1305,22 +1278,6 @@ mod tests {
         assert!(
             page.contains("hidden"),
             "change notice hidden attribute, got: {page}"
-        );
-    }
-
-    #[test]
-    fn status_bar_in_html() {
-        let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(
-            &html_body,
-            &headings,
-            Path::new("/r/f.md"),
-            Path::new("/r"),
-            &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None },
-        );
-        assert!(
-            page.contains("class=\"status-bar\""),
-            "status bar element must be present, got: {page}"
         );
     }
 

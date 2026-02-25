@@ -6,46 +6,12 @@
 
 body {
     margin: 0;
-    padding-bottom: 1.75rem; /* room for the fixed status bar */
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     font-size: 16px;
+    font-weight: 400;
     line-height: 1.6;
     color: #24292e;
     background: #fff;
-}
-
-/* ---- Status bar (fixed bottom, vim-style) ---- */
-
-.status-bar {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    z-index: 100;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    height: 1.5rem;
-    padding: 0 1rem;
-    background: #24292e;
-    color: #adbac7;
-    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-    font-size: 0.75rem;
-    border-top: 1px solid #444d56;
-}
-
-.status-path {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: #e6edf3;
-}
-
-.status-mtime {
-    white-space: nowrap;
-    flex-shrink: 0;
-    margin-left: 1.5rem;
-    color: #768390;
 }
 
 /* ---- Two-column layout ---- */
@@ -62,12 +28,8 @@ body {
 /* ---- TOC sidebar ---- */
 
 .toc-sidebar {
-    --toc-accent: #635bff;
-    --toc-ink: #0a2540;
-    --toc-muted: #425466;
-    --toc-rail: #dfe7f5;
     flex-shrink: 0;
-    width: 220px;
+    width: 200px;
     position: sticky;
     top: 1rem;
     align-self: flex-start;
@@ -84,85 +46,44 @@ body {
 }
 
 .toc-sidebar li {
-    position: relative;
     margin: 0;
     padding: 0;
 }
 
 .toc-sidebar a {
     display: block;
-    padding: 0.24rem 0.5rem;
-    color: var(--toc-muted);
+    padding: 0.2rem 0;
+    color: #6a737d;
     text-decoration: none;
-    border-left: 2px solid transparent;
-    border-radius: 0 6px 6px 0;
-    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
 .toc-sidebar a:hover {
-    color: #19324c;
-    border-left-color: #b5ccff;
-    background: #f5f8ff;
+    color: #24292e;
 }
 
 .toc-sidebar a.active {
-    color: #1b2559;
+    color: #24292e;
     font-weight: 600;
-    border-left-color: var(--toc-accent);
-    background: linear-gradient(90deg, #eef2ff 0%, #f8faff 100%);
 }
 
-/* Indentation by heading level */
-.toc-h1 { padding-left: 0; }
-.toc-h2 { padding-left: 0.75rem; }
-.toc-h3 { padding-left: 1.5rem; }
-.toc-h4 { padding-left: 2.25rem; }
-.toc-h5 { padding-left: 3rem; }
-.toc-h6 { padding-left: 3.75rem; }
+/* Hierarchy by indentation and size — applied to the <a> so display:block picks it up */
+.toc-h1 > a { padding-left: 0; }
+.toc-h2 > a { padding-left: 0; }
+.toc-h3 > a { padding-left: 0.75rem; }
+.toc-h4 > a { padding-left: 1.5rem; }
+.toc-h5 > a { padding-left: 2.25rem; }
+.toc-h6 > a { padding-left: 3rem; }
 
-.toc-h1 > a {
-    font-weight: 600;
-    color: var(--toc-ink);
-}
-
-.toc-h2 > a {
-    color: #17324d;
-    font-weight: 540;
-}
-
-.toc-h3 > a {
-    color: #2a435e;
-    font-size: 0.97em;
-}
-
+.toc-h3 > a,
 .toc-h4 > a,
 .toc-h5 > a,
 .toc-h6 > a {
-    color: #506176;
-    font-size: 0.94em;
+    font-size: 0.9375em;
+    color: #959da5;
 }
-
-.toc-h2::before,
-.toc-h3::before,
-.toc-h4::before,
-.toc-h5::before,
-.toc-h6::before {
-    content: "";
-    position: absolute;
-    top: 0.95rem;
-    width: 0.5rem;
-    height: 1px;
-    background: var(--toc-rail);
-}
-
-.toc-h2::before { left: 0.15rem; }
-.toc-h3::before { left: 0.9rem; }
-.toc-h4::before { left: 1.65rem; }
-.toc-h5::before { left: 2.4rem; }
-.toc-h6::before { left: 3.15rem; }
 
 /* ---- Main content area ---- */
 
@@ -182,7 +103,7 @@ body {
 .content h6 {
     margin-top: 1.5rem;
     margin-bottom: 0.75rem;
-    scroll-margin-top: 4rem;
+    scroll-margin-top: 0.5rem;
     font-weight: 600;
     line-height: 1.25;
     color: #24292e;
@@ -191,7 +112,7 @@ body {
 .content h1,
 .content h2,
 .content h3 {
-    font-family: Didot, 'Bodoni MT', 'Noto Serif Display', 'URW Palladio L', P052, Sylfaen, serif;
+    font-family: 'Iowan Old Style', 'Palatino Linotype', 'URW Palladio L', P052, serif;
     font-weight: 400;
     letter-spacing: -0.02em;
 }
@@ -223,12 +144,12 @@ body {
 }
 
 .content a {
-    color: #0366d6;
-    text-decoration: none;
+    color: inherit;
+    text-decoration: underline;
 }
 
 .content a:hover {
-    text-decoration: underline;
+    opacity: 0.7;
 }
 
 .content code {
@@ -379,36 +300,25 @@ body {
     border-bottom: none;
 }
 
-.backlinks-list {
+.content .backlinks-list {
     list-style: none;
     margin: 0;
     padding: 0;
 }
 
 .backlinks-item {
-    padding: 0.5rem 0.375rem;
-    margin: 0 -0.375rem;
-    border-radius: 4px;
+    padding: 0.5rem 0;
     border-bottom: 1px solid #eaecef;
-    transition: background 0.08s ease;
 }
 
 .backlinks-item:last-child {
     border-bottom: none;
 }
 
-.backlinks-item:hover {
-    background: #f6f8fa;
-}
-
 .backlinks-source {
     font-size: 0.9375rem;
     font-weight: 500;
-    color: #0366d6;
-    text-decoration: none;
-}
-
-.backlinks-item:hover .backlinks-source {
+    color: inherit;
     text-decoration: underline;
 }
 
