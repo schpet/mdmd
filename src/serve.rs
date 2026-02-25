@@ -182,6 +182,48 @@ pub fn is_headed_environment() -> bool {
     is_headed_for(platform, &env)
 }
 
+// ---------------------------------------------------------------------------
+// Browser open helpers
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when a browser-open attempt should be made.
+///
+/// Both conditions must hold:
+/// - `no_open` is `false` (the user has not suppressed auto-open).
+/// - `headed` is `true` (the environment can display a browser window).
+pub fn should_attempt_open(no_open: bool, headed: bool) -> bool {
+    !no_open && headed
+}
+
+/// Returns the platform-appropriate command used to open a URL in the default
+/// browser.
+///
+/// - macOS  → `"open"`
+/// - Linux  → `"xdg-open"`
+/// - Other  → `""` (empty string; treated as "no command available")
+pub fn default_open_command() -> &'static str {
+    #[cfg(target_os = "macos")]
+    return "open";
+    #[cfg(target_os = "linux")]
+    return "xdg-open";
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    return "";
+}
+
+/// Spawn a child process that opens `url` using `cmd`.
+///
+/// Returns `Err` immediately if `cmd` is empty or if the spawn fails.
+/// The child process is **not** waited on — this is a fire-and-forget call.
+pub fn spawn_browser_open(cmd: &str, url: &str) -> io::Result<std::process::Child> {
+    if cmd.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no browser-open command for this platform",
+        ));
+    }
+    std::process::Command::new(cmd).arg(url).spawn()
+}
+
 /// Maximum number of consecutive ports to try before giving up.
 const MAX_PORT_ATTEMPTS: u16 = 100;
 
@@ -1546,9 +1588,6 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open
         .and_then(|m| m.modified().ok())
         .unwrap_or(SystemTime::UNIX_EPOCH);
 
-    // no_open gates browser-launch logic added in a later subtask.
-    let _ = no_open;
-
     let state = Arc::new(AppState {
         serve_root,
         canonical_root,
@@ -1598,6 +1637,17 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open
         .flatten();
     if let Some(ref host) = tailscale_host {
         println!("http://{host}:{bound_port}{}", state.entry_url_path);
+    }
+
+    // Attempt to open the entry URL in the default browser (fire-and-forget).
+    // Must run after all stdout URL lines are printed so the URL is visible
+    // even if the open attempt fails or is skipped.
+    if should_attempt_open(no_open, is_headed_environment()) {
+        let url = format!("http://127.0.0.1:{bound_port}{}", state.entry_url_path);
+        match spawn_browser_open(default_open_command(), &url) {
+            Ok(_) => vlog!(verbose, "[browser] opened {url}"),
+            Err(e) => vlog!(verbose, "[browser] open failed: {e}"),
+        }
     }
 
     axum::serve(listener, app)
@@ -2636,5 +2686,67 @@ mod tests {
         // function returns without panicking and produces a valid bool.
         let result = is_headed_environment();
         assert!(result == true || result == false);
+    }
+
+    // --- should_attempt_open ---
+
+    #[test]
+    fn should_attempt_open_no_open_false_headed_true() {
+        assert!(should_attempt_open(false, true));
+    }
+
+    #[test]
+    fn should_attempt_open_no_open_true_headed_true() {
+        assert!(!should_attempt_open(true, true));
+    }
+
+    #[test]
+    fn should_attempt_open_no_open_false_headed_false() {
+        assert!(!should_attempt_open(false, false));
+    }
+
+    #[test]
+    fn should_attempt_open_no_open_true_headed_false() {
+        assert!(!should_attempt_open(true, false));
+    }
+
+    // --- default_open_command ---
+
+    #[test]
+    fn default_open_command_is_not_empty_on_known_platform() {
+        // On macOS or Linux the command must be a non-empty string.
+        // On other platforms it must be empty (no browser opener).
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        assert!(!default_open_command().is_empty());
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        assert!(default_open_command().is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn default_open_command_macos_is_open() {
+        assert_eq!(default_open_command(), "open");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn default_open_command_linux_is_xdg_open() {
+        assert_eq!(default_open_command(), "xdg-open");
+    }
+
+    // --- spawn_browser_open ---
+
+    #[test]
+    fn spawn_browser_open_empty_cmd_returns_err() {
+        let result = spawn_browser_open("", "http://127.0.0.1:8080/");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn spawn_browser_open_nonexistent_cmd_returns_err() {
+        // A command that cannot possibly exist should fail at spawn time.
+        let result = spawn_browser_open("__mdmd_no_such_binary__", "http://127.0.0.1:8080/");
+        assert!(result.is_err());
     }
 }
