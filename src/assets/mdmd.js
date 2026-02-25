@@ -374,51 +374,64 @@ window.mdmd = window.mdmd || {};
 
     var mainEl = document.querySelector('main.content');
 
-    /* Apply class (idempotent — FOUC script already ran). */
-    if (active) {
-        document.documentElement.classList.add(INDENT_CLASS);
-    } else {
-        document.documentElement.classList.remove(INDENT_CLASS);
-    }
-
-    /* Apply DOM outline transform on page load if the mode is already active. */
-    if (active && mainEl && !mainEl.dataset.indentActive) {
-        buildOutlineSections(mainEl);
-        /* Rebind TOC observer after ON-path DOM restructuring (bd-1zl.5). */
-        var nsInit = window.mdmd;
-        if (nsInit && typeof nsInit.rebindHeadingObserver === 'function') {
-            nsInit.rebindHeadingObserver();
-        }
-    }
-
-    /* Bind toggle button once it exists (added by bd-1zl.2). */
+    /* Capture btn reference at init time; setIndentMode closes over it. */
     var btn = document.getElementById('indent-toggle');
-    if (!btn) { return; }
 
-    /* Reflect initial state in aria-pressed. */
-    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    /* --- bd-1zl.2.2: Centralized mode transition ----------------------------- *
+     *                                                                            *
+     * setIndentMode(nextOn) is the single call site for all state transitions.  *
+     * It reads authoritative state from documentElement class so callers do not  *
+     * need a local variable that could drift from actual DOM/class state.        *
+     *                                                                            *
+     * Idempotency:                                                               *
+     *   ON→ON : classList.add is a browser no-op; the data-indent-active guard  *
+     *           skips buildOutlineSections when sections are already present.    *
+     *   OFF→OFF: applyIndentOff's OFF guard (absent data-indent-active) skips   *
+     *            the unwrap + transition path entirely.  Persistence and ARIA    *
+     *            are still written so they cannot drift after a prior failure.   *
+     *                                                                            *
+     * Persistence and ARIA are always written to the final resolved value,       *
+     * including no-op calls from the init path, so UI and storage never drift.  *
+     * ----------------------------------------------------------------------- */
+    function setIndentMode(nextOn) {
+        var currentOn = document.documentElement.classList.contains(INDENT_CLASS);
 
-    btn.addEventListener('click', function () {
-        active = !active;
-        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-        if (active) {
+        if (nextOn) {
+            /* ON path: add class (idempotent), build DOM sections if needed. */
             document.documentElement.classList.add(INDENT_CLASS);
             try { localStorage.setItem(INDENT_KEY, INDENT_ON); } catch (_) {}
-            /* ON guard (bd-1zl.4.2): skip transform if already applied. */
             if (mainEl && !mainEl.dataset.indentActive) {
                 buildOutlineSections(mainEl);
-                /* Rebind TOC observer after ON-path DOM restructuring (bd-1zl.5). */
-                var nsOn = window.mdmd;
-                if (nsOn && typeof nsOn.rebindHeadingObserver === 'function') {
-                    nsOn.rebindHeadingObserver();
+                var ns = window.mdmd;
+                if (ns && typeof ns.rebindHeadingObserver === 'function') {
+                    ns.rebindHeadingObserver();
                 }
             }
         } else {
-            /* OFF path uses transition-aware sequencing with unwrap (bd-1zl.4.1).
-             * OFF guard inside applyIndentOff handles the already-off case. */
-            applyIndentOff(mainEl);
+            if (currentOn) {
+                /* Genuine OFF transition: transition-aware unwrap (handles class
+                 * removal and persistence via applyIndentOff). */
+                applyIndentOff(mainEl);
+            } else {
+                /* Already off: sync persistence without triggering animation. */
+                try { localStorage.setItem(INDENT_KEY, INDENT_OFF); } catch (_) {}
+            }
         }
-    });
+
+        /* Always sync ARIA to resolved state, including no-op calls from init. */
+        if (btn) { btn.setAttribute('aria-pressed', nextOn ? 'true' : 'false'); }
+    }
+
+    /* Apply initial state (class, DOM transform, ARIA, persistence all in one). */
+    setIndentMode(active);
+
+    /* Bind click handler; reads authoritative state from documentElement class. */
+    if (btn) {
+        btn.addEventListener('click', function () {
+            var currentOn = document.documentElement.classList.contains(INDENT_CLASS);
+            setIndentMode(!currentOn);
+        });
+    }
 }());
 
 /* --------------------------------------------------------------------- *
