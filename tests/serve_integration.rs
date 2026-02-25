@@ -567,6 +567,7 @@ fn test_serve_directory_readme_resolves() {
     let fixture = Fixture::new(FixtureOptions {
         include_subdir_readme: true,
         include_large_file: false,
+        ..Default::default()
     });
     let server = ServerHandle::new("test_serve_directory_readme_resolves", &fixture);
 
@@ -584,6 +585,7 @@ fn test_serve_directory_index_resolves() {
     let fixture = Fixture::new(FixtureOptions {
         include_subdir_readme: false,
         include_large_file: false,
+        ..Default::default()
     });
     let server = ServerHandle::new("test_serve_directory_index_resolves", &fixture);
 
@@ -611,6 +613,7 @@ fn test_serve_nosniff_header() {
     let fixture = Fixture::new(FixtureOptions {
         include_subdir_readme: true,
         include_large_file: true,
+        ..Default::default()
     });
     let server = ServerHandle::new("test_serve_nosniff_header", &fixture);
 
@@ -758,6 +761,7 @@ fn test_serve_file_too_large() {
     let fixture = Fixture::new(FixtureOptions {
         include_subdir_readme: true,
         include_large_file: true,
+        ..Default::default()
     });
     let server = ServerHandle::new("test_serve_file_too_large", &fixture);
 

@@ -1,3 +1,4 @@
+mod backlinks;
 mod html;
 mod parse;
 mod render;
@@ -50,8 +51,9 @@ enum Commands {
     },
     /// Serve a markdown file (or directory) over HTTP
     ///
-    /// The serve root is the current working directory (CWD) at process start.
-    /// The entry file must be inside the CWD; run mdmd from your document root.
+    /// The serve root is the current working directory (CWD) when the entry is
+    /// inside the CWD.  If the entry path is outside the CWD, the serve root is
+    /// derived from the entry location and a network-exposure warning is shown.
     ///
     /// On startup, two URLs are printed to stdout:
     ///   url:   http://127.0.0.1:<port>/<path-to-entry>   (entry document)
@@ -87,7 +89,7 @@ enum Commands {
     name = "mdmd",
     version,
     about = "A TUI markdown viewer and navigator",
-    after_help = "INVOCATION FORMS:\n  mdmd <file>                      View file in TUI mode (legacy)\n  mdmd view <file>                 View file in TUI mode\n  mdmd serve [OPTIONS] <file>      Serve file over HTTP\n\nSERVE NOTES:\n  The serve root is the current working directory (CWD).\n  Run mdmd from the directory that contains your documents.\n  See docs/serve-semantics.md for the full behavior contract."
+    after_help = "INVOCATION FORMS:\n  mdmd <file>                      View file in TUI mode (legacy)\n  mdmd view <file>                 View file in TUI mode\n  mdmd serve [OPTIONS] <file>      Serve file over HTTP\n\nSERVE NOTES:\n  Serve root defaults to CWD when the entry is inside CWD.\n  Passing an entry outside CWD prints a network-exposure warning.\n  See docs/serve-semantics.md for the full behavior contract."
 )]
 struct Cli {
     #[command(subcommand)]

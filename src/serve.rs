@@ -1179,11 +1179,9 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
 /// to 100 times.  The server shuts down cleanly when SIGINT (Ctrl+C) is
 /// received.
 pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::Result<()> {
-    // Use CWD as serve root so that sibling and parent directories remain
-    // accessible when the entry file is nested (e.g. `playground/README.md`).
-    let serve_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let canonical_root =
-        std::fs::canonicalize(&serve_root).unwrap_or_else(|_| serve_root.clone());
+    // Use CWD as the default serve root.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let canonical_cwd = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
 
     // Canonicalize the entry file path.
     let raw_entry = PathBuf::from(&file);
@@ -1192,6 +1190,52 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
         eprintln!("Error: {msg}");
         io::Error::new(io::ErrorKind::NotFound, msg)
     })?;
+
+    // Determine serve_root and canonical_root based on whether the entry is inside CWD.
+    let (serve_root, canonical_root) = if canonical_entry.starts_with(&canonical_cwd) {
+        // Entry is inside CWD: use CWD as serve root (unchanged behavior).
+        (cwd, canonical_cwd)
+    } else {
+        // Entry is outside CWD: derive serve_root from entry location.
+        let new_root = if canonical_entry.is_dir() {
+            canonical_entry.clone()
+        } else {
+            canonical_entry
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| canonical_entry.clone())
+        };
+        let canonical_new_root =
+            std::fs::canonicalize(&new_root).unwrap_or_else(|_| new_root.clone());
+
+        // Warn about network exposure risk (all to stderr).
+        use std::io::IsTerminal;
+        eprintln!("WARNING: Serving files from outside your current working directory.");
+        eprintln!("serve_root: {}", canonical_new_root.display());
+        eprintln!("Any file under this directory may be accessible to others on your network.");
+
+        if std::io::stdin().is_terminal() {
+            eprint!("Proceed? [y/N] ");
+            {
+                use std::io::Write;
+                let _ = std::io::stderr().flush();
+            }
+            let mut answer = String::new();
+            {
+                use std::io::BufRead;
+                let _ = std::io::BufReader::new(std::io::stdin().lock()).read_line(&mut answer);
+            }
+            let trimmed = answer.trim().to_lowercase();
+            if trimmed != "y" && trimmed != "yes" {
+                eprintln!("Aborted.");
+                std::process::exit(1);
+            }
+        } else {
+            eprintln!("[info] Non-interactive stdin; proceeding without confirmation.");
+        }
+
+        (new_root, canonical_new_root)
+    };
 
     // If the entry resolves to a directory, apply the README.md / index.md fallback.
     let entry_file = if canonical_entry.is_dir() {
@@ -1212,17 +1256,6 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
     } else {
         canonical_entry
     };
-
-    // Reject entry files that lie outside the serve root.
-    if !entry_file.starts_with(&canonical_root) {
-        let msg = format!(
-            "entry '{}' is outside serve root '{}'; run mdmd from the document root directory",
-            entry_file.display(),
-            canonical_root.display()
-        );
-        eprintln!("Error: {msg}");
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, msg));
-    }
 
     // Compute the URL path for the entry file (used in the startup banner and by handlers).
     let entry_url_path = derive_entry_url_path(&entry_file, &canonical_root).map_err(|msg| {
