@@ -624,3 +624,271 @@ describe('indent-hierarchy toggle — init-path persistence', () => {
     });
 
 });
+
+// ---------------------------------------------------------------------------
+// Fixture helpers — outline algorithm tests (bd-1zl.7.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a fresh vm context with an explicit list of child node definitions
+ * instead of the fixed h1/h2/h3 structure used by makeContext.
+ *
+ * @param {Array<{tag: string, id?: string}>} childDefs
+ *   Elements to append (in order) as direct children of main.content.
+ * @param {object} [opts]
+ * @param {string|null} [opts.storedValue='off']
+ *   Initial mdmd-indent-hierarchy value (null means key absent).
+ */
+function makeFixtureContext(childDefs, { storedValue = 'off' } = {}) {
+    const doc    = new FakeDocument();
+    const htmlEl = doc.documentElement;
+
+    const mainEl = doc.createElement('main');
+    mainEl.className = 'content';
+    mainEl.classList.add('content');
+    htmlEl.appendChild(mainEl);
+
+    for (const def of childDefs) {
+        const el = doc.createElement(def.tag);
+        if (def.id) el.id = def.id;
+        mainEl.appendChild(el);
+    }
+
+    const btn = doc.createElement('button');
+    btn.id = 'indent-toggle';
+    htmlEl.appendChild(btn);
+
+    const init = (storedValue !== null)
+        ? { 'mdmd-indent-hierarchy': storedValue }
+        : {};
+    const ls = new FakeLocalStorage(init);
+
+    // Always report reduced-motion so applyIndentOff unwraps synchronously.
+    const matchMedia = () => ({ matches: true });
+
+    const ctx = vm.createContext({
+        window       : { mdmd: {} },
+        document     : doc,
+        localStorage : ls,
+        setTimeout   : fn => fn(),
+        clearTimeout : () => {},
+        setInterval  : () => 0,
+        clearInterval: () => {},
+    });
+    ctx.window.matchMedia = matchMedia;
+
+    vm.runInContext(INDENT_SRC, ctx);
+
+    ctx._mainEl = mainEl;
+    ctx._htmlEl = htmlEl;
+    ctx._btn    = btn;
+    return ctx;
+}
+
+/**
+ * Find the first descendant of root whose id equals the given value, or null.
+ */
+function findById(root, id) {
+    return root._allDescendants().find(e => e.id === id) ?? null;
+}
+
+/**
+ * Return the 'data-depth' attribute string of the nearest ancestor
+ * data-indent-generated wrapper containing el, or null when el lives at the
+ * top level of mainEl (not inside any wrapper).
+ */
+function wrappingDepth(el, mainEl) {
+    let cur = el._parent;
+    while (cur && cur !== mainEl) {
+        if (cur.getAttribute('data-indent-generated') === '1') {
+            return cur.getAttribute('data-depth');
+        }
+        cur = cur._parent;
+    }
+    return null;
+}
+
+// ---------------------------------------------------------------------------
+// Tests — fixture-based outline algorithm (bd-1zl.7.1)
+// ---------------------------------------------------------------------------
+describe('indent-hierarchy — outline algorithm fixtures', () => {
+
+    test('F1. Single H1 + paragraph → one depth-1 wrapper', () => {
+        const ctx    = makeFixtureContext([
+            { tag: 'h1', id: 'a' },
+            { tag: 'p' },
+        ]);
+        const mainEl = ctx._mainEl;
+        const CASE   = 'F1 single-h1';
+
+        clickToggle(ctx);  // OFF → ON
+
+        assert.equal(wrapperCount(mainEl), 1,
+            `[${CASE}] expected exactly 1 wrapper (got ${wrapperCount(mainEl)})`);
+
+        const h1 = findById(mainEl, 'a');
+        assert.ok(h1, `[${CASE}] h1#a must be present in the DOM after ON`);
+        assert.equal(wrappingDepth(h1, mainEl), '1',
+            `[${CASE}] h1#a must live inside a depth-1 wrapper`);
+
+        // The generated wrapper must be a direct child of main.
+        const wrapper = mainEl.querySelector('[data-indent-generated="1"]');
+        assert.ok(wrapper, `[${CASE}] generated wrapper must be findable`);
+        assert.equal(wrapper._parent, mainEl,
+            `[${CASE}] wrapper must be a direct child of main.content`);
+        assert.equal(wrapper.getAttribute('data-depth'), '1',
+            `[${CASE}] wrapper data-depth must be "1"`);
+    });
+
+    test('F2. Mixed levels H1/H2/H3 → nested wrappers at depths 1/2/3', () => {
+        const ctx    = makeFixtureContext([
+            { tag: 'h1', id: 'a' },
+            { tag: 'h2', id: 'b' },
+            { tag: 'h3', id: 'c' },
+        ]);
+        const mainEl = ctx._mainEl;
+        const CASE   = 'F2 mixed-levels';
+
+        clickToggle(ctx);  // OFF → ON
+
+        assert.equal(wrapperCount(mainEl), 3,
+            `[${CASE}] expected 3 wrappers — one per heading (got ${wrapperCount(mainEl)})`);
+
+        const h1 = findById(mainEl, 'a');
+        const h2 = findById(mainEl, 'b');
+        const h3 = findById(mainEl, 'c');
+
+        assert.equal(wrappingDepth(h1, mainEl), '1',
+            `[${CASE}] h1#a must be in a depth-1 wrapper`);
+        assert.equal(wrappingDepth(h2, mainEl), '2',
+            `[${CASE}] h2#b must be in a depth-2 wrapper`);
+        assert.equal(wrappingDepth(h3, mainEl), '3',
+            `[${CASE}] h3#c must be in a depth-3 wrapper`);
+
+        // Structural nesting: depth-2 wrapper must be inside depth-1 wrapper.
+        const d2Wrapper = h2._parent;
+        assert.equal(d2Wrapper.getAttribute('data-depth'), '2',
+            `[${CASE}] h2's immediate parent must be the depth-2 wrapper`);
+        assert.equal(d2Wrapper._parent.getAttribute('data-depth'), '1',
+            `[${CASE}] depth-2 wrapper must be nested inside the depth-1 wrapper`);
+
+        // depth-1 wrapper must be a direct child of main.
+        const d1Wrapper = d2Wrapper._parent;
+        assert.equal(d1Wrapper._parent, mainEl,
+            `[${CASE}] depth-1 wrapper must be a direct child of main.content`);
+    });
+
+    test('F3. Skipped level H1→H3 → H3 nested at depth 2 (no phantom H2)', () => {
+        const ctx    = makeFixtureContext([
+            { tag: 'h1', id: 'a' },
+            { tag: 'h3', id: 'c' },
+        ]);
+        const mainEl = ctx._mainEl;
+        const CASE   = 'F3 skipped-level';
+
+        clickToggle(ctx);
+
+        assert.equal(wrapperCount(mainEl), 2,
+            `[${CASE}] expected 2 wrappers for H1+H3 (got ${wrapperCount(mainEl)})`);
+
+        const h3 = findById(mainEl, 'c');
+        assert.equal(wrappingDepth(h3, mainEl), '2',
+            `[${CASE}] h3#c must be at depth 2 despite the skipped H2 ` +
+            `(actual: ${wrappingDepth(h3, mainEl)})`);
+
+        // The depth-2 wrapper must be nested inside the depth-1 wrapper.
+        const d2Wrapper = h3._parent;
+        assert.equal(d2Wrapper.getAttribute('data-depth'), '2',
+            `[${CASE}] h3's parent must have data-depth="2"`);
+        assert.equal(d2Wrapper._parent.getAttribute('data-depth'), '1',
+            `[${CASE}] depth-2 wrapper must be inside the depth-1 wrapper`);
+    });
+
+    test('F4. Pre-heading content → stays unwrapped as direct child of main', () => {
+        const ctx    = makeFixtureContext([
+            { tag: 'p',  id: 'pre'  },
+            { tag: 'h1', id: 'a'    },
+            { tag: 'p',  id: 'post' },
+        ]);
+        const mainEl = ctx._mainEl;
+        const CASE   = 'F4 pre-heading-content';
+
+        clickToggle(ctx);
+
+        assert.equal(wrapperCount(mainEl), 1,
+            `[${CASE}] expected 1 wrapper (h1 section only, got ${wrapperCount(mainEl)})`);
+
+        // p#pre must remain a direct child of main (depth-0 content).
+        const pre = findById(mainEl, 'pre');
+        assert.ok(pre, `[${CASE}] p#pre must exist in the DOM`);
+        assert.equal(pre._parent, mainEl,
+            `[${CASE}] p#pre must be a direct child of main.content (not wrapped)`);
+
+        // p#post must be inside the generated wrapper.
+        const post = findById(mainEl, 'post');
+        assert.ok(post, `[${CASE}] p#post must exist in the DOM`);
+        assert.notEqual(post._parent, mainEl,
+            `[${CASE}] p#post must NOT be a direct child of main (must be inside wrapper)`);
+        assert.equal(post._parent.getAttribute('data-indent-generated'), '1',
+            `[${CASE}] p#post's parent must be a generated indent-section wrapper`);
+    });
+
+    test('F5. No headings → transform is a no-op; zero wrappers created', () => {
+        const ctx    = makeFixtureContext([
+            { tag: 'p' },
+            { tag: 'p' },
+        ]);
+        const mainEl = ctx._mainEl;
+        const htmlEl = ctx._htmlEl;
+        const CASE   = 'F5 no-headings';
+
+        assert.doesNotThrow(() => clickToggle(ctx),
+            `[${CASE}] toggle ON on a no-heading page must not throw`);
+
+        assert.equal(wrapperCount(mainEl), 0,
+            `[${CASE}] zero wrappers must be created when there are no headings`);
+
+        // The root class IS still applied — the state machine advances normally.
+        assert.ok(htmlEl.classList.contains('indent-hierarchy-on'),
+            `[${CASE}] root class 'indent-hierarchy-on' must be set even with no headings`);
+    });
+
+    test('F6. Same-level H2 sequence → sibling sections, all at depth 1', () => {
+        const ctx    = makeFixtureContext([
+            { tag: 'h2', id: 'a'  },
+            { tag: 'p',  id: 'p1' },
+            { tag: 'h2', id: 'b'  },
+            { tag: 'p',  id: 'p2' },
+            { tag: 'h2', id: 'c'  },
+            { tag: 'p',  id: 'p3' },
+        ]);
+        const mainEl = ctx._mainEl;
+        const CASE   = 'F6 same-level-siblings';
+
+        clickToggle(ctx);
+
+        assert.equal(wrapperCount(mainEl), 3,
+            `[${CASE}] expected 3 sibling wrappers for 3 H2 elements (got ${wrapperCount(mainEl)})`);
+
+        // All wrappers must be depth-1 direct children of main — no nesting.
+        const wrappers = mainEl.querySelectorAll('[data-indent-generated="1"]');
+        for (const w of wrappers) {
+            assert.equal(w.getAttribute('data-depth'), '1',
+                `[${CASE}] every wrapper must have data-depth="1" for same-level H2s`);
+            assert.equal(w._parent, mainEl,
+                `[${CASE}] every wrapper must be a direct child of main.content`);
+        }
+
+        // Each heading must land in its own depth-1 wrapper.
+        for (const id of ['a', 'b', 'c']) {
+            const el = findById(mainEl, id);
+            assert.equal(wrappingDepth(el, mainEl), '1',
+                `[${CASE}] h2#${id} must be inside a depth-1 wrapper`);
+        }
+
+        // No accidental nesting: all three wrappers must be distinct elements.
+        assert.equal(new Set(wrappers).size, 3,
+            `[${CASE}] the 3 wrappers must be distinct elements (no duplication)`);
+    });
+
+});
