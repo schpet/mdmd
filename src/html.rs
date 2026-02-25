@@ -8,6 +8,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::backlinks::BacklinkRef;
+
 use comrak::{
     arena_tree::NodeEdge,
     format_html,
@@ -399,7 +401,7 @@ pub fn render_markdown(
 }
 
 /// Build the full HTML page shell: `<!DOCTYPE html>` with header, sticky TOC
-/// sidebar, and rendered content area.
+/// sidebar, rendered content area, and backlinks panel.
 ///
 /// # Parameters
 /// - `body_html`: the raw HTML fragment produced by `render_markdown`.
@@ -407,6 +409,8 @@ pub fn render_markdown(
 /// - `file_path`: absolute path to the source `.md` file (for display).
 /// - `serve_root`: root directory of the serve tree (used to compute the
 ///   relative display path shown in the header).
+/// - `backlinks`: inbound [`BacklinkRef`]s for this page from the startup index.
+///   Pass `&[]` for non-markdown pages, static assets, and error responses.
 ///
 /// # Returns
 /// A complete `text/html` document ready to send to the browser.
@@ -415,6 +419,7 @@ pub fn build_page_shell(
     headings: &[HeadingEntry],
     file_path: &Path,
     serve_root: &Path,
+    backlinks: &[BacklinkRef],
 ) -> String {
     // Relative path for the header, falling back to the full path.
     let display_path = file_path
@@ -434,6 +439,7 @@ pub fn build_page_shell(
     let display_path_escaped = html_escape(&display_path);
     let content_html = inject_heading_ids(body_html, headings);
     let toc_html = build_toc_html(headings);
+    let backlinks_html = build_backlinks_html(backlinks);
 
     // Mermaid is loaded unconditionally to keep shell logic simple.
     // Version is pinned (not @latest) for reproducibility and to avoid silent
@@ -460,11 +466,39 @@ pub fn build_page_shell(
 <main class=\"content\">\n\
 {content_html}</main>\n\
 </div>\n\
+{backlinks_html}\
 <script src=\"{MERMAID_CDN_URL}\"></script>\n\
 <script src=\"/assets/mdmd.js\"></script>\n\
 </body>\n\
 </html>\n"
     )
+}
+
+/// Build the HTML fragment for the backlinks panel.
+///
+/// When `backlinks` is empty the panel reads "No backlinks yet."  Otherwise
+/// each [`BacklinkRef`] is rendered as a list item with a link to the source
+/// document and a short context snippet.
+fn build_backlinks_html(backlinks: &[BacklinkRef]) -> String {
+    if backlinks.is_empty() {
+        return "<section class=\"backlinks\">\n\
+<h2>Backlinks</h2>\n\
+<p>No backlinks yet.</p>\n\
+</section>\n"
+            .to_owned();
+    }
+
+    let mut html = String::from("<section class=\"backlinks\">\n<h2>Backlinks</h2>\n<ul>\n");
+    for bl in backlinks {
+        let href = html_escape(&bl.source_url_path);
+        let label = html_escape(&bl.source_display);
+        let snippet = html_escape(&bl.snippet);
+        html.push_str(&format!(
+            "<li><a href=\"{href}\">{label}</a> — <span class=\"snippet\">{snippet}</span></li>\n"
+        ));
+    }
+    html.push_str("</ul>\n</section>\n");
+    html
 }
 
 // ---------------------------------------------------------------------------
@@ -713,6 +747,7 @@ mod tests {
             &headings,
             Path::new("/root/doc.md"),
             Path::new("/root"),
+            &[],
         );
         assert!(
             page.contains("<nav class=\"toc-sidebar\">"),
@@ -725,7 +760,7 @@ mod tests {
     #[test]
     fn page_shell_contains_script_tag() {
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"));
+        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &[]);
         assert!(
             page.contains("<script src=\"/assets/mdmd.js\">"),
             "script tag present"
@@ -735,7 +770,7 @@ mod tests {
     #[test]
     fn page_shell_contains_pinned_mermaid_cdn_script() {
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"));
+        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &[]);
         assert!(
             page.contains(
                 "<script src=\"https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js\">"
@@ -747,7 +782,7 @@ mod tests {
     #[test]
     fn page_shell_contains_css_link() {
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"));
+        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &[]);
         assert!(
             page.contains("href=\"/assets/mdmd.css\""),
             "css link present"
@@ -762,6 +797,7 @@ mod tests {
             &headings,
             Path::new("/docs/guide/intro.md"),
             Path::new("/docs"),
+            &[],
         );
         assert!(
             page.contains("guide/intro.md"),
@@ -773,7 +809,7 @@ mod tests {
     fn page_shell_heading_ids_injected() {
         let input = "# Title\n\n## Sub\n";
         let (html_body, headings) = render(input);
-        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"));
+        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &[]);
         assert!(
             page.contains("<h1 id=\"title\">"),
             "h1 id injected in content"

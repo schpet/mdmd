@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,7 @@ use axum::{
 use tokio::signal;
 use tower_http::compression::CompressionLayer;
 
+use crate::backlinks::BacklinkRef;
 use crate::html;
 use crate::web_assets;
 
@@ -102,6 +104,10 @@ pub struct AppState {
     /// `Last-Modified` timestamp for embedded static assets, derived from the
     /// binary's own modification time.  Falls back to the Unix epoch.
     pub asset_mtime: SystemTime,
+    /// Startup-built backlinks index: maps root-relative URL path keys
+    /// (e.g. `/docs/readme.md`) to all inbound [`BacklinkRef`]s for that page.
+    /// Built once at startup; intentionally stale until server restart.
+    pub backlinks: HashMap<String, Vec<BacklinkRef>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1098,7 +1104,16 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
         // Default: render as a full HTML page with TOC shell.
         let (html_body, headings) =
             html::render_markdown(&content, &canonical, &state.canonical_root);
-        let page = html::build_page_shell(&html_body, &headings, &canonical, &state.canonical_root);
+        let key = crate::backlinks::url_key_from_rel_path(&norm_display);
+        let backlinks_slice = state.backlinks.get(&key).map(Vec::as_slice).unwrap_or(&[]);
+        eprintln!("[backlinks] key={key} found={}", backlinks_slice.len());
+        let page = html::build_page_shell(
+            &html_body,
+            &headings,
+            &canonical,
+            &state.canonical_root,
+            backlinks_slice,
+        );
 
         let etag = compute_etag(page.as_bytes());
         let last_modified = mtime
@@ -1266,7 +1281,7 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
     // Build the startup backlinks index synchronously before server bind.
     // The index is eventually-stale by design; users must restart the server
     // after editing files to pick up changes (the println! below reminds them).
-    let _backlinks_index = crate::backlinks::build_backlinks_index(&canonical_root);
+    let backlinks = crate::backlinks::build_backlinks_index(&canonical_root);
 
     // Precompute ETags for embedded static assets (stable for the lifetime of
     // this server process — embedded bytes never change at runtime).
@@ -1290,6 +1305,7 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
         css_etag,
         js_etag,
         asset_mtime,
+        backlinks,
     });
 
     let (std_listener, bound_port) = bind_with_retry(&bind_addr, start_port).map_err(|msg| {
