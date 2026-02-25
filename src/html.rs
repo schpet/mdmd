@@ -991,4 +991,74 @@ mod tests {
         );
         assert!(result.is_none(), "path escaping root must return None");
     }
+
+    // --- bd-t6w: CWD-root nested entry regression guards ---
+    //
+    // When serve_root = CWD (e.g. /workspace) and the entry file lives in a
+    // subdirectory (e.g. /workspace/playground/README.md), relative links must
+    // rewrite to hrefs that include the subdirectory prefix.  These tests will
+    // fail if serve_root is inadvertently set to entry_file.parent() instead of
+    // CWD.
+
+    #[test]
+    fn rewrite_nested_entry_sibling_link_cwd_root() {
+        // serve_root = /workspace  (CWD)
+        // file_path  = /workspace/playground/README.md
+        // link: [t](subdir/nested.md) → /playground/subdir/nested.md
+        let html = render_abs("[t](subdir/nested.md)\n", "/workspace", "playground/README.md");
+        assert!(
+            html.contains("href=\"/playground/subdir/nested.md\""),
+            "expected /playground/subdir/nested.md, got: {html}"
+        );
+    }
+
+    #[test]
+    fn rewrite_nested_entry_dotdot_to_cwd_root() {
+        // serve_root = /workspace
+        // file_path  = /workspace/playground/README.md
+        // link: [t](../code.md) resolves to /workspace/code.md → /code.md
+        let html = render_abs("[t](../code.md)\n", "/workspace", "playground/README.md");
+        assert!(
+            html.contains("href=\"/code.md\""),
+            "expected /code.md (dotdot from nested entry), got: {html}"
+        );
+    }
+
+    #[test]
+    fn rewrite_nested_entry_extensionless_link_cwd_root() {
+        // serve_root = /workspace
+        // file_path  = /workspace/playground/links.md
+        // link: [t](subdir/doc) (extensionless) → /playground/subdir/doc
+        let html = render_abs("[t](subdir/doc)\n", "/workspace", "playground/links.md");
+        assert!(
+            html.contains("href=\"/playground/subdir/doc\""),
+            "expected /playground/subdir/doc (extensionless), got: {html}"
+        );
+    }
+
+    #[test]
+    fn rewrite_nested_entry_image_cwd_root() {
+        // serve_root = /workspace
+        // file_path  = /workspace/playground/README.md
+        // image: ![img](img/logo.png) → /playground/img/logo.png
+        let html = render_abs("![img](img/logo.png)\n", "/workspace", "playground/README.md");
+        assert!(
+            html.contains("src=\"/playground/img/logo.png\""),
+            "expected /playground/img/logo.png (image rewrite), got: {html}"
+        );
+    }
+
+    #[test]
+    fn rewrite_root_level_entry_unchanged_by_cwd_root() {
+        // When the entry IS at the root level the behavior must be identical
+        // regardless of whether serve_root is the entry's parent or CWD.
+        // serve_root = /workspace
+        // file_path  = /workspace/README.md (root-level entry)
+        // link: [t](docs/page.md) → /docs/page.md
+        let html = render_abs("[t](docs/page.md)\n", "/workspace", "README.md");
+        assert!(
+            html.contains("href=\"/docs/page.md\""),
+            "expected /docs/page.md for root-level entry, got: {html}"
+        );
+    }
 }

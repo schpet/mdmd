@@ -1171,3 +1171,191 @@ fn test_serve_rich_404_recovery() {
         resp3.context()
     );
 }
+
+// ---------------------------------------------------------------------------
+// bd-t6w: resolve_candidate fallback order + rewrite_local_links integration
+// ---------------------------------------------------------------------------
+
+/// End-to-end validation of the resolve_candidate fallback order via HTTP.
+///
+/// Pins the four branches (exact, extensionless, readme, index) so a
+/// regression in serve.rs fallback logic is detected immediately.
+#[test]
+fn test_serve_resolve_fallback_order_http() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_path_buf();
+
+    let entry = root.join("README.md");
+    fs::write(&entry, "# Root\n").expect("write root README");
+
+    // Branch 1 – exact: /page.md exists.
+    fs::write(root.join("page.md"), "# Page\n").expect("write page.md");
+
+    // Branch 2 – extensionless: /noext → /noext.md.
+    fs::write(root.join("noext.md"), "# NoExt\n").expect("write noext.md");
+
+    // Branch 3 – readme: /has-readme/ → README.md.
+    let has_readme = root.join("has-readme");
+    fs::create_dir_all(&has_readme).expect("create has-readme dir");
+    fs::write(has_readme.join("README.md"), "# DirReadme\n").expect("write dir README");
+
+    // Branch 4 – index: /has-index/ → index.md (no README.md present).
+    let has_index = root.join("has-index");
+    fs::create_dir_all(&has_index).expect("create has-index dir");
+    fs::write(has_index.join("index.md"), "# DirIndex\n").expect("write dir index");
+
+    let fixture = Fixture {
+        _tmp: tmp,
+        root,
+        entry,
+    };
+    let server = ServerHandle::new("test_serve_resolve_fallback_order_http", &fixture);
+    let c = client();
+
+    // 1. Exact path.
+    let resp = fetch(&c, &server.url("/page.md"));
+    assert_status(&resp, 200);
+    assert!(
+        resp.body_text().contains("Page"),
+        "exact branch: expected 'Page' in body\n{}",
+        resp.context()
+    );
+
+    // 2. Extensionless → .md appended.
+    let resp = fetch(&c, &server.url("/noext"));
+    assert_status(&resp, 200);
+    assert!(
+        resp.body_text().contains("NoExt"),
+        "extensionless branch: expected 'NoExt' in body\n{}",
+        resp.context()
+    );
+
+    // 3. Directory → README.md.
+    let resp = fetch(&c, &server.url("/has-readme/"));
+    assert_status(&resp, 200);
+    assert!(
+        resp.body_text().contains("DirReadme"),
+        "readme branch: expected 'DirReadme' in body\n{}",
+        resp.context()
+    );
+
+    // 4. Directory → index.md (README.md absent).
+    let resp = fetch(&c, &server.url("/has-index/"));
+    assert_status(&resp, 200);
+    assert!(
+        resp.body_text().contains("DirIndex"),
+        "index branch: expected 'DirIndex' in body\n{}",
+        resp.context()
+    );
+}
+
+/// Validates rewrite_local_links() behavior when the entry file is nested under
+/// a subdirectory (CWD-root scenario introduced by bd-2uj).
+///
+/// serve_root = CWD = <fixture root>
+/// entry_file = <fixture root>/subdir/README.md
+///
+/// Links in subdir/README.md must rewrite to root-relative hrefs that include
+/// the "subdir/" prefix.  If serve_root were still set to entry_file.parent()
+/// these assertions would fail, making this a direct regression guard for the
+/// CWD-root change.
+#[test]
+fn test_serve_nested_entry_rewritten_links_root_relative() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_path_buf();
+
+    let subdir = root.join("subdir");
+    fs::create_dir_all(&subdir).expect("create subdir");
+
+    // Entry file with three kinds of relative links.
+    fs::write(
+        subdir.join("README.md"),
+        "# Nested\n\n\
+         [sibling](sibling.md)\n\n\
+         [parent file](../other.md)\n\n\
+         [extensionless](sibling)\n",
+    )
+    .expect("write nested README");
+
+    fs::write(subdir.join("sibling.md"), "# Sibling\n").expect("write sibling.md");
+    fs::write(root.join("other.md"), "# Other\n").expect("write other.md");
+
+    let fixture = Fixture {
+        _tmp: tmp,
+        root,
+        entry: subdir.join("README.md"),
+    };
+    let server =
+        ServerHandle::new("test_serve_nested_entry_rewritten_links_root_relative", &fixture);
+
+    let resp = fetch(&client(), &server.url("/subdir/README.md"));
+    assert_status(&resp, 200);
+    let body = resp.body_text();
+
+    // Sibling link must be root-relative with the subdir prefix.
+    assert!(
+        body.contains("href=\"/subdir/sibling.md\""),
+        "sibling link must be /subdir/sibling.md\n{}",
+        resp.context()
+    );
+
+    // Parent-level link (../other.md) must resolve to /other.md.
+    assert!(
+        body.contains("href=\"/other.md\""),
+        "parent link must be /other.md\n{}",
+        resp.context()
+    );
+
+    // Extensionless link must include the subdir prefix.
+    assert!(
+        body.contains("href=\"/subdir/sibling\""),
+        "extensionless link must be /subdir/sibling\n{}",
+        resp.context()
+    );
+}
+
+/// Validates that rewritten link targets in a nested-entry scenario are all
+/// reachable (HTTP 200) via the same server instance.
+#[test]
+fn test_serve_nested_entry_rewritten_link_targets_reachable() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_path_buf();
+
+    let subdir = root.join("subdir");
+    fs::create_dir_all(&subdir).expect("create subdir");
+
+    fs::write(
+        subdir.join("README.md"),
+        "# Nested\n\n\
+         [sibling](sibling.md)\n\n\
+         [parent file](../other.md)\n\n\
+         [extensionless](sibling)\n",
+    )
+    .expect("write nested README");
+
+    fs::write(subdir.join("sibling.md"), "# Sibling\n").expect("write sibling.md");
+    fs::write(root.join("other.md"), "# Other\n").expect("write other.md");
+
+    let fixture = Fixture {
+        _tmp: tmp,
+        root,
+        entry: subdir.join("README.md"),
+    };
+    let server = ServerHandle::new(
+        "test_serve_nested_entry_rewritten_link_targets_reachable",
+        &fixture,
+    );
+    let c = client();
+
+    // /subdir/sibling.md — exact path resolve.
+    let resp = fetch(&c, &server.url("/subdir/sibling.md"));
+    assert_status(&resp, 200);
+
+    // /other.md — root-level file reachable from nested entry.
+    let resp = fetch(&c, &server.url("/other.md"));
+    assert_status(&resp, 200);
+
+    // /subdir/sibling — extensionless resolve (adds .md).
+    let resp = fetch(&c, &server.url("/subdir/sibling"));
+    assert_status(&resp, 200);
+}
