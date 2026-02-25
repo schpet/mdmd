@@ -1780,6 +1780,29 @@ mod tests {
         assert!(result.is_err(), "expected command-not-found error");
     }
 
+    /// `tailscale_dns_name(false)` must complete without panicking on either
+    /// the subprocess-error branch or the success path.
+    ///
+    /// When the `tailscale` binary is absent the subprocess-error branch is
+    /// taken; `vlog!(false, ...)` is silently suppressed (no stderr output).
+    /// When `tailscale` is present the success path returns Some without any
+    /// diagnostic output.  Either outcome is acceptable.
+    #[test]
+    fn tailscale_dns_name_verbose_false_does_not_panic() {
+        let _ = tailscale_dns_name(false);
+    }
+
+    /// `tailscale_dns_name(true)` must complete without panicking on either
+    /// the subprocess-error branch or the success path.
+    ///
+    /// When the `tailscale` binary is absent the subprocess-error branch emits
+    /// a `[tailscale] skipped` line via `vlog!(true, ...)` and the function
+    /// returns `None`.  Either outcome is acceptable; only no-panic is asserted.
+    #[test]
+    fn tailscale_dns_name_verbose_true_does_not_panic() {
+        let _ = tailscale_dns_name(true);
+    }
+
     // --- is_raw_mode ---
 
     #[test]
