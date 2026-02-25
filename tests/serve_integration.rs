@@ -817,54 +817,51 @@ fn test_serve_script_stripped() {
 fn test_serve_startup_stdout_format() {
     let fixture = Fixture::new(FixtureOptions::default());
     let server = ServerHandle::new("test_serve_startup_stdout_format", &fixture);
+    let port = server.port;
 
     let _ = fetch(&client(), &server.url("/"));
 
     let output = server.shutdown_with_sigint();
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     let lines: Vec<&str> = stdout.lines().collect();
 
+    // Must have at least one line (local URL) and at most two (local + tailscale).
     assert!(
-        !lines.is_empty(),
-        "startup stdout is empty\nstdout:\n{stdout}"
-    );
-    assert_eq!(
-        lines[0], "mdmd serve",
-        "first startup line must be exact banner\nstdout:\n{stdout}"
+        !lines.is_empty() && lines.len() <= 2,
+        "expected 1–2 startup lines, got {}\nstdout:\n{stdout}",
+        lines.len()
     );
 
-    let root_idx = lines
-        .iter()
-        .position(|l| l.starts_with("root:  "))
-        .unwrap_or_else(|| panic!("missing root line\nstdout:\n{stdout}"));
-    let entry_idx = lines
-        .iter()
-        .position(|l| l.starts_with("entry: "))
-        .unwrap_or_else(|| panic!("missing entry line\nstdout:\n{stdout}"));
-    let url_idx = lines
-        .iter()
-        .position(|l| l.starts_with("url:   http://"))
-        .unwrap_or_else(|| panic!("missing url line\nstdout:\n{stdout}"));
-    let index_idx = lines
-        .iter()
-        .position(|l| l.starts_with("index: http://"))
-        .unwrap_or_else(|| panic!("missing index line\nstdout:\n{stdout}"));
+    // Line 0: bare local URL — matches http://127.0.0.1:{port}/...
+    assert!(
+        lines[0].starts_with(&format!("http://127.0.0.1:{port}/")),
+        "first startup line must be bare local URL http://127.0.0.1:{port}/...\nstdout:\n{stdout}"
+    );
 
+    // If a second line exists it must be a bare tailscale URL — no label prefix.
+    if let Some(second) = lines.get(1) {
+        assert!(
+            second.starts_with("http://") && !second.starts_with("url:"),
+            "second startup line must be bare http:// URL (no 'url:' prefix)\ngot: {second:?}\nstdout:\n{stdout}"
+        );
+    }
+
+    // No line may carry any of the old label prefixes.
+    let forbidden = ["mdmd serve", "root:", "entry:", "url:", "index:", "backlinks:"];
+    for line in &lines {
+        for prefix in forbidden {
+            assert!(
+                !line.starts_with(prefix),
+                "startup stdout must not contain label prefix {prefix:?}\noffending line: {line:?}\nstdout:\n{stdout}"
+            );
+        }
+    }
+
+    // Default mode (no --verbose): tailscale diagnostics must not appear on stderr.
     assert!(
-        root_idx > 0,
-        "root line must follow banner\nstdout:\n{stdout}"
-    );
-    assert!(
-        entry_idx > root_idx,
-        "entry line must appear after root line\nstdout:\n{stdout}"
-    );
-    assert!(
-        url_idx > entry_idx,
-        "url line must appear after entry line\nstdout:\n{stdout}"
-    );
-    assert!(
-        index_idx > entry_idx,
-        "index line must appear after entry line\nstdout:\n{stdout}"
+        !stderr.contains("[tailscale]"),
+        "stderr must not contain [tailscale] diagnostics in default mode\nstderr:\n{stderr}"
     );
 }
 

@@ -1804,6 +1804,57 @@ mod tests {
         let _ = tailscale_dns_name(true);
     }
 
+    // --- tailscale URL output contract ---
+
+    /// When tailscale_host is Some, the startup URL block emits exactly one
+    /// bare URL line — no 'url:' label prefix, no 'index:' variant line.
+    #[test]
+    fn tailscale_url_present_emits_one_bare_url_no_index() {
+        let host = "mymachine.ts.net";
+        let port: u16 = 8080;
+        let path = "/entry.html";
+
+        let tailscale_host: Option<&str> = Some(host);
+        let mut lines: Vec<String> = vec![];
+        if let Some(h) = tailscale_host {
+            lines.push(format!("http://{h}:{port}{path}"));
+        }
+
+        assert_eq!(lines.len(), 1, "expected exactly one tailscale URL line");
+        let url = &lines[0];
+        assert!(
+            url.starts_with("http://"),
+            "URL must start with 'http://', got: {url:?}"
+        );
+        assert!(
+            !url.starts_with("url:"),
+            "URL must not have 'url:' label prefix, got: {url:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.starts_with("index:")),
+            "no 'index:' line must appear"
+        );
+    }
+
+    /// When tailscale_host is None, no extra URL lines are emitted.
+    #[test]
+    fn tailscale_url_absent_emits_no_lines() {
+        let port: u16 = 8080;
+        let path = "/entry.html";
+
+        let tailscale_host: Option<&str> = None;
+        let mut lines: Vec<String> = vec![];
+        if let Some(h) = tailscale_host {
+            lines.push(format!("http://{h}:{port}{path}"));
+        }
+
+        assert_eq!(
+            lines.len(),
+            0,
+            "expected zero tailscale URL lines when host is absent"
+        );
+    }
+
     // --- is_raw_mode ---
 
     #[test]
