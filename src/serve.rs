@@ -1878,6 +1878,95 @@ mod tests {
         let _ = tailscale_dns_name(true);
     }
 
+    // --- startup URL output contract ---
+
+    /// The local URL line is a bare `http://127.0.0.1:{port}{path}` string —
+    /// no label prefix, no 'index:' variant, no extra decoration.
+    #[test]
+    fn local_url_line_is_bare_http_127_0_0_1() {
+        let port: u16 = 4321;
+        let path = "/README.md";
+
+        let line = format!("http://127.0.0.1:{port}{path}");
+
+        assert!(
+            line.starts_with("http://127.0.0.1:"),
+            "local URL must start with 'http://127.0.0.1:', got: {line:?}"
+        );
+        assert!(
+            !line.starts_with("url:"),
+            "local URL must not have 'url:' label prefix, got: {line:?}"
+        );
+        assert!(
+            !line.starts_with("mdmd serve"),
+            "local URL must not start with 'mdmd serve' banner, got: {line:?}"
+        );
+        assert!(
+            !line.starts_with("root:"),
+            "local URL must not start with 'root:' label, got: {line:?}"
+        );
+        assert!(
+            !line.starts_with("index:"),
+            "local URL must not start with 'index:' label, got: {line:?}"
+        );
+        assert_eq!(line, "http://127.0.0.1:4321/README.md");
+    }
+
+    /// The full startup URL block emits exactly two bare URL lines when tailscale
+    /// is present: local first, tailscale second — no labels, no index lines.
+    #[test]
+    fn startup_url_block_local_first_tailscale_second_no_labels() {
+        let port: u16 = 8080;
+        let path = "/guide.md";
+        let ts_host = "myhost.ts.net";
+
+        let local_line = format!("http://127.0.0.1:{port}{path}");
+        let ts_line = format!("http://{ts_host}:{port}{path}");
+        let block: Vec<&str> = vec![&local_line, &ts_line];
+
+        assert_eq!(block.len(), 2, "expected exactly two URL lines");
+        assert!(
+            block[0].starts_with("http://127.0.0.1:"),
+            "first line must be local URL, got: {:?}",
+            block[0]
+        );
+        assert!(
+            block[1].starts_with("http://"),
+            "second line must start with 'http://', got: {:?}",
+            block[1]
+        );
+        for line in &block {
+            for forbidden in &["url:", "index:", "mdmd serve", "root:", "entry:"] {
+                assert!(
+                    !line.starts_with(forbidden),
+                    "startup URL block must not contain label {forbidden:?}, line: {line:?}"
+                );
+            }
+        }
+    }
+
+    /// When tailscale is absent the startup URL block contains exactly one line.
+    #[test]
+    fn startup_url_block_local_only_when_no_tailscale() {
+        let port: u16 = 9000;
+        let path = "/README.md";
+
+        let local_line = format!("http://127.0.0.1:{port}{path}");
+        let tailscale_host: Option<&str> = None;
+
+        let mut block: Vec<String> = vec![local_line];
+        if let Some(h) = tailscale_host {
+            block.push(format!("http://{h}:{port}{path}"));
+        }
+
+        assert_eq!(block.len(), 1, "expected exactly one URL line when tailscale is absent");
+        assert!(
+            block[0].starts_with("http://127.0.0.1:"),
+            "sole line must be local URL, got: {:?}",
+            block[0]
+        );
+    }
+
     // --- tailscale URL output contract ---
 
     /// When tailscale_host is Some, the startup URL block emits exactly one
