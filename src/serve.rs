@@ -865,7 +865,8 @@ async fn render_directory_index_response(
     let mut rd = match tokio::fs::read_dir(dir_path).await {
         Ok(rd) => rd,
         Err(e) => {
-            eprintln!(
+            vlog!(
+                state.verbose,
                 "[dir-index] cannot read dir={} err={e}",
                 dir_path.display()
             );
@@ -1489,7 +1490,7 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open
         };
         if n == 0 {
             // EOF (null stdin): auto-proceed without confirmation.
-            eprintln!("[info] Non-interactive stdin; proceeding without confirmation.");
+            vlog!(verbose, "[info] Non-interactive stdin; proceeding without confirmation.");
         } else {
             let trimmed = answer.trim().to_lowercase();
             if trimmed != "y" && trimmed != "yes" {
