@@ -48,9 +48,29 @@ enum Commands {
         /// Path to the markdown file
         file: String,
     },
-    /// Serve a markdown file over HTTP
+    /// Serve a markdown file (or directory) over HTTP
+    ///
+    /// The serve root is the current working directory (CWD) at process start.
+    /// The entry file must be inside the CWD; run mdmd from your document root.
+    ///
+    /// On startup, two URLs are printed to stdout:
+    ///   url:   http://127.0.0.1:<port>/<path-to-entry>   (entry document)
+    ///   index: http://127.0.0.1:<port>/                   (root directory index)
+    ///
+    /// GET / always renders a browsable directory index of the serve root,
+    /// even when a README.md is present at the root.
+    ///
+    /// For non-root paths, resolution order is:
+    ///   1. Exact file match
+    ///   2. Extensionless .md append (e.g. /foo → /foo.md)
+    ///   3. Directory index file (README.md, then index.md)
+    ///   4. Browsable directory listing (when the path is a directory)
+    ///   5. Rich 404 page with nearest-parent recovery links
+    ///
+    /// Directory listings exclude dotfiles and out-of-root symlinks.
+    /// Entries are sorted: directories first, then files, both alphabetical.
     Serve {
-        /// Path to the markdown file
+        /// Path to the markdown file or directory
         file: String,
         /// Interface address to bind to
         #[arg(long, default_value = "0.0.0.0")]
@@ -67,7 +87,7 @@ enum Commands {
     name = "mdmd",
     version,
     about = "A TUI markdown viewer and navigator",
-    after_help = "INVOCATION FORMS:\n  mdmd <file>                      View file in TUI mode (legacy)\n  mdmd view <file>                 View file in TUI mode\n  mdmd serve [OPTIONS] <file>      Serve file over HTTP"
+    after_help = "INVOCATION FORMS:\n  mdmd <file>                      View file in TUI mode (legacy)\n  mdmd view <file>                 View file in TUI mode\n  mdmd serve [OPTIONS] <file>      Serve file over HTTP\n\nSERVE NOTES:\n  The serve root is the current working directory (CWD).\n  Run mdmd from the directory that contains your documents.\n  See docs/serve-semantics.md for the full behavior contract."
 )]
 struct Cli {
     #[command(subcommand)]
