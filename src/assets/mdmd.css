@@ -451,10 +451,22 @@ body {
 
 /* Base state: wrappers are display:block with no indentation.
  * Padding starts at 0 so the indent-hierarchy-on class can animate
- * from 0 to the depth value (bd-1zl.6.2 adds transitions). */
+ * from 0 to the depth value. */
+/* bd-1zl.6.2: transition on padding-inline-start so toggling ON/OFF animates
+ * smoothly.  The reduced-motion block below disables this for users who
+ * prefer it.  Duration sits in the 160–220 ms sweet-spot recommended by the
+ * issue: long enough to be perceptible, short enough not to feel sluggish. */
 .indent-section {
     display: block;
     padding-inline-start: 0;
+    transition: padding-inline-start 180ms ease-out;
+}
+
+/* bd-1zl.6.2: Honour the OS/browser reduced-motion preference. */
+@media (prefers-reduced-motion: reduce) {
+    .indent-section {
+        transition: none;
+    }
 }
 
 /* When indent-hierarchy-on is active, apply depth-proportional indentation
