@@ -24,10 +24,6 @@
         )
     );
 
-    if (headingEls.length === 0) {
-        return;
-    }
-
     /* Track which heading IDs are currently intersecting (in the top 20% of
      * the viewport).  The topmost one in document order becomes "active". */
     var visibleIds = new Set();
@@ -68,6 +64,38 @@
     headingEls.forEach(function (el) {
         observer.observe(el);
     });
+
+    /* --- bd-1zl.5.1: rebindHeadingObserver --------------------------------- *
+     *                                                                           *
+     * Rebuilds observer bindings after DOM restructuring on mode transitions.  *
+     * Called by unwrapOutlineSections (OFF path) via                           *
+     * window.mdmd.rebindHeadingObserver.                                       *
+     *                                                                           *
+     *   1. Disconnect existing observer so stale observations are cleared.    *
+     *   2. Clear visibleIds — stale IDs must not survive across resets.        *
+     *   3. Re-query fresh heading node references from the live DOM.          *
+     *   4. Re-observe each heading with the (now disconnected) observer.      *
+     *   5. Call updateActive() to clear any stale .active state.             *
+     *                                                                           *
+     * On no-heading documents, re-query returns []; disconnect() is safe and  *
+     * updateActive() is a no-op.                                               *
+     * ----------------------------------------------------------------------- */
+    function rebindHeadingObserver() {
+        if (observer) { observer.disconnect(); }
+        visibleIds.clear();
+        headingEls = Array.from(
+            document.querySelectorAll(
+                'main.content h1, main.content h2, main.content h3,' +
+                'main.content h4, main.content h5, main.content h6'
+            )
+        );
+        headingEls.forEach(function (el) { observer.observe(el); });
+        updateActive();
+    }
+
+    /* Expose for cross-IIFE use (bd-1zl.5.1). */
+    window.mdmd = window.mdmd || {};
+    window.mdmd.rebindHeadingObserver = rebindHeadingObserver;
 }());
 
 /* --------------------------------------------------------------------- *
@@ -89,7 +117,7 @@
 
 /* --------------------------------------------------------------------- *
  * Shared namespace for cross-IIFE integration hooks                    *
- * bd-1zl.5.1 will assign rebindHeadingObserver here.                  *
+ * rebindHeadingObserver is assigned by the TOC IIFE above (bd-1zl.5.1)*
  * --------------------------------------------------------------------- */
 window.mdmd = window.mdmd || {};
 
