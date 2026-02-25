@@ -192,6 +192,61 @@ impl ServerHandle {
         }
     }
 
+    /// Flexible constructor that accepts arbitrary additional arguments and
+    /// environment overrides for the spawned server process.
+    ///
+    /// - `extra_args`: additional CLI arguments (appended after `--bind`/`--port`).
+    /// - `env_set`: environment variables to set on the child process.
+    /// - `env_remove`: environment variables to remove from the child's environment
+    ///   (useful for stripping CI-injected vars like `CI` or `DISPLAY`).
+    fn new_with_env(
+        scenario: &str,
+        fixture: &Fixture,
+        extra_args: &[&str],
+        env_set: &[(&str, &str)],
+        env_remove: &[&str],
+    ) -> Self {
+        let port = free_port();
+        eprintln!(
+            "[TEST] scenario={} port={} extra_args={:?} env_set={:?} env_remove={:?}",
+            scenario, port, extra_args, env_set, env_remove
+        );
+
+        let mut cmd = Command::new(bin_path());
+        cmd.arg("serve")
+            .arg("--bind")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg(port.to_string());
+
+        for arg in extra_args {
+            cmd.arg(arg);
+        }
+
+        cmd.arg(&fixture.entry)
+            .current_dir(&fixture.root)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        for (k, v) in env_set {
+            cmd.env(k, v);
+        }
+        for k in env_remove {
+            cmd.env_remove(k);
+        }
+
+        let mut child = cmd.spawn().expect("spawn mdmd serve (new_with_env)");
+
+        let base_url = format!("http://127.0.0.1:{port}");
+        wait_for_server_ready(&mut child, &base_url);
+
+        Self {
+            child: Some(child),
+            base_url,
+            port,
+        }
+    }
+
     fn url(&self, path_and_query: &str) -> String {
         format!("{}{}", self.base_url, path_and_query)
     }
@@ -2449,5 +2504,186 @@ fn test_verbose_startup_diagnostics_emitted() {
     assert!(
         stderr.contains("[bind]"),
         "[bind] must appear in stderr with --verbose\nstderr:\n{stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// bd-1mv: verbose/no-open/open-attempt integration coverage
+// ---------------------------------------------------------------------------
+
+/// Verify that `--verbose` keeps URL lines on stdout and emits startup
+/// diagnostics on stderr.
+///
+/// Acceptance criteria:
+/// - stdout has at least one bare URL line (`http://127.0.0.1:<port>/...`).
+/// - stdout lines carry no `[serve]`, `[bind]`, `[browser]`, or `[tailscale]`
+///   label prefixes.
+/// - stderr contains `[serve]` and `[bind]` diagnostic lines.
+/// - `[tailscale]` is visible: either as a `[tailscale] skipped` line on
+///   stderr (tailscale absent) or as a second URL line on stdout (tailscale
+///   present).
+///
+/// `MDMD_OPEN_CMD` is set to a nonexistent binary so that any accidental
+/// browser-open attempt produces a `[browser]` failure line on stderr rather
+/// than spawning a real browser.  If `[browser]` appears, the stdout-only
+/// contract is still valid (it goes to stderr), but its presence is not
+/// asserted here — the test only checks the URL/diagnostic split.
+#[cfg(unix)]
+#[test]
+fn test_verbose_url_stdout_and_startup_stderr_diagnostics() {
+    let fixture = Fixture::new(FixtureOptions::default());
+    let server = ServerHandle::new_with_env(
+        "test_verbose_url_stdout_and_startup_stderr_diagnostics",
+        &fixture,
+        &["--verbose"],
+        &[("MDMD_OPEN_CMD", "__mdmd_no_such_open_cmd__")],
+        &[],
+    );
+
+    let _ = fetch(&client(), &server.url("/"));
+    let port = server.port;
+
+    let output = server.shutdown_with_sigint();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let lines: Vec<&str> = stdout.lines().collect();
+
+    // stdout must have at least one URL line.
+    assert!(
+        !lines.is_empty(),
+        "--verbose must still emit URL line(s) on stdout\nstdout:\n{stdout}"
+    );
+
+    // First line must be the bare local URL.
+    assert!(
+        lines[0].starts_with(&format!("http://127.0.0.1:{port}/")),
+        "first stdout line must be bare local URL http://127.0.0.1:{port}/...\nstdout:\n{stdout}"
+    );
+
+    // No diagnostic label prefixes on stdout — URL-only contract holds with --verbose.
+    for line in &lines {
+        for prefix in &["[serve]", "[bind]", "[browser]", "[tailscale]"] {
+            assert!(
+                !line.starts_with(prefix),
+                "stdout must not carry {prefix} diagnostic prefix in verbose mode\nline: {line:?}\nstdout:\n{stdout}"
+            );
+        }
+    }
+
+    // stderr must contain [serve] and [bind] startup diagnostics.
+    assert!(
+        stderr.contains("[serve]"),
+        "[serve] must appear in stderr with --verbose\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("[bind]"),
+        "[bind] must appear in stderr with --verbose\nstderr:\n{stderr}"
+    );
+
+    // Tailscale: either a [tailscale] skipped diagnostic on stderr (tailscale absent)
+    // or a second URL line on stdout (tailscale present and running).
+    let has_tailscale_stderr = stderr.contains("[tailscale]");
+    let has_tailscale_stdout = lines.len() >= 2;
+    assert!(
+        has_tailscale_stderr || has_tailscale_stdout,
+        "--verbose must report tailscale status: either [tailscale] on stderr or second URL on stdout\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// Verify that `--no-open` prevents any browser-open attempt regardless of
+/// the headed-environment state.
+///
+/// Sets `DISPLAY=:99` to simulate a headed-like Linux environment and removes
+/// `CI`/`GITHUB_ACTIONS` so that headed detection depends only on `DISPLAY`.
+/// Uses `MDMD_OPEN_CMD=__mdmd_no_such_open_cmd__` as a deterministic stub: if
+/// the server mistakenly attempts an open, the nonexistent command fails and
+/// `[browser] open failed:` appears on stderr.  The test asserts that no
+/// `[browser]` line is present.
+///
+/// Also asserts that the server URL appears on stdout, confirming the server
+/// started normally.
+#[cfg(unix)]
+#[test]
+fn test_no_open_suppresses_browser_attempt() {
+    let fixture = Fixture::new(FixtureOptions::default());
+    let server = ServerHandle::new_with_env(
+        "test_no_open_suppresses_browser_attempt",
+        &fixture,
+        &["--no-open", "--verbose"],
+        &[
+            // Simulate a headed Linux environment.
+            ("DISPLAY", ":99"),
+            // Deterministic stub: any open attempt would fail and log [browser].
+            ("MDMD_OPEN_CMD", "__mdmd_no_such_open_cmd__"),
+        ],
+        // Strip CI vars so headed detection is based on DISPLAY alone.
+        &["CI", "GITHUB_ACTIONS"],
+    );
+
+    let _ = fetch(&client(), &server.url("/"));
+
+    let output = server.shutdown_with_sigint();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Server must have started and printed at least one URL.
+    assert!(
+        !stdout.is_empty(),
+        "server must emit URL on stdout\nstdout:\n{stdout}"
+    );
+
+    // --no-open must prevent any browser-open attempt.
+    assert!(
+        !stderr.contains("[browser]"),
+        "--no-open must suppress all [browser] diagnostics even with headed-like env\nstderr:\n{stderr}"
+    );
+}
+
+/// Verify that a headless CI environment (`CI=1`, no `DISPLAY`, no
+/// `WAYLAND_DISPLAY`) suppresses browser auto-open even when `--no-open` is
+/// not passed.
+///
+/// Uses `MDMD_OPEN_CMD=__mdmd_no_such_open_cmd__` as a deterministic stub: if
+/// the server mistakenly attempts an open, the nonexistent command fails and
+/// `[browser] open failed:` appears on stderr.  The test asserts that no
+/// `[browser]` line is present.
+///
+/// Also asserts that the server URL appears on stdout, confirming the server
+/// started normally.
+#[cfg(unix)]
+#[test]
+fn test_headless_ci_env_suppresses_browser_attempt() {
+    let fixture = Fixture::new(FixtureOptions::default());
+    let server = ServerHandle::new_with_env(
+        "test_headless_ci_env_suppresses_browser_attempt",
+        &fixture,
+        &["--verbose"],
+        &[
+            // Simulate a CI headless environment.
+            ("CI", "1"),
+            // Deterministic stub: any open attempt would fail and log [browser].
+            ("MDMD_OPEN_CMD", "__mdmd_no_such_open_cmd__"),
+        ],
+        // Ensure no display is set so the environment is truly headless.
+        &["DISPLAY", "WAYLAND_DISPLAY"],
+    );
+
+    let _ = fetch(&client(), &server.url("/"));
+
+    let output = server.shutdown_with_sigint();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Server must have started and printed at least one URL.
+    assert!(
+        !stdout.is_empty(),
+        "server must emit URL on stdout in headless mode\nstdout:\n{stdout}"
+    );
+
+    // Headless CI env must suppress auto-open: no [browser] diagnostic.
+    assert!(
+        !stderr.contains("[browser]"),
+        "headless CI env must suppress [browser] diagnostics (no DISPLAY, CI=1)\nstderr:\n{stderr}"
     );
 }

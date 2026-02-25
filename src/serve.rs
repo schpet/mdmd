@@ -210,6 +210,25 @@ pub fn default_open_command() -> &'static str {
     return "";
 }
 
+/// Resolve the browser-open command, preferring a `MDMD_OPEN_CMD` env-var
+/// override when one is supplied.
+///
+/// This function accepts the override value directly so it can be exercised
+/// in unit tests without touching the global process environment.
+///
+/// - `env_override = Some(cmd)` → returns `cmd` as-is (including empty string).
+/// - `env_override = None`       → returns [`default_open_command()`].
+///
+/// The primary caller is [`run_serve`], which passes
+/// `std::env::var("MDMD_OPEN_CMD").ok().as_deref()`.
+/// Integration tests can set `MDMD_OPEN_CMD` on the spawned child process to
+/// inject a deterministic stub without requiring a real browser binary.
+pub fn resolve_open_cmd(env_override: Option<&str>) -> String {
+    env_override
+        .map(str::to_owned)
+        .unwrap_or_else(|| default_open_command().to_owned())
+}
+
 /// Spawn a child process that opens `url` using `cmd`.
 ///
 /// Returns `Err` immediately if `cmd` is empty or if the spawn fails.
@@ -1642,9 +1661,14 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open
     // Attempt to open the entry URL in the default browser (fire-and-forget).
     // Must run after all stdout URL lines are printed so the URL is visible
     // even if the open attempt fails or is skipped.
+    //
+    // The open command may be overridden via the `MDMD_OPEN_CMD` environment
+    // variable.  Integration tests set this to a nonexistent binary so they
+    // can verify open-attempt logic without launching a real browser.
     if should_attempt_open(no_open, is_headed_environment()) {
         let url = format!("http://127.0.0.1:{bound_port}{}", state.entry_url_path);
-        match spawn_browser_open(default_open_command(), &url) {
+        let open_cmd = resolve_open_cmd(std::env::var("MDMD_OPEN_CMD").ok().as_deref());
+        match spawn_browser_open(&open_cmd, &url) {
             Ok(_) => vlog!(verbose, "[browser] opened {url}"),
             Err(e) => vlog!(verbose, "[browser] open failed: {e}"),
         }
@@ -2733,6 +2757,33 @@ mod tests {
     #[test]
     fn default_open_command_linux_is_xdg_open() {
         assert_eq!(default_open_command(), "xdg-open");
+    }
+
+    // --- resolve_open_cmd ---
+
+    /// When `MDMD_OPEN_CMD` is provided as `Some`, `resolve_open_cmd` returns
+    /// it verbatim, overriding the platform default.
+    #[test]
+    fn resolve_open_cmd_uses_override_when_provided() {
+        assert_eq!(resolve_open_cmd(Some("my-browser")), "my-browser");
+        assert_eq!(resolve_open_cmd(Some("/usr/bin/xdg-open")), "/usr/bin/xdg-open");
+    }
+
+    /// An empty string override is accepted as-is (callers decide whether to act on it).
+    #[test]
+    fn resolve_open_cmd_empty_override_preserved() {
+        assert_eq!(resolve_open_cmd(Some("")), "");
+    }
+
+    /// When no override is provided (`None`), the function falls back to
+    /// `default_open_command()` — a non-empty value on macOS/Linux.
+    #[test]
+    fn resolve_open_cmd_no_override_falls_back_to_platform_default() {
+        let cmd = resolve_open_cmd(None);
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        assert!(!cmd.is_empty(), "platform default must be non-empty on macOS/Linux");
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        assert!(cmd.is_empty(), "platform default must be empty on unsupported platforms");
     }
 
     // --- spawn_browser_open ---
