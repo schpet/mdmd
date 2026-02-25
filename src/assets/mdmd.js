@@ -1,4 +1,4 @@
-/* mdmd.js — TOC active-heading highlight, Mermaid initialisation, and theme toggle */
+/* mdmd.js — TOC active-heading highlight, Mermaid initialisation, theme toggle, and indentation hierarchy toggle */
 (function () {
     'use strict';
 
@@ -84,6 +84,60 @@
         var next = effectivelyDark ? 'light' : 'dark';
         document.documentElement.setAttribute('data-theme', next);
         try { localStorage.setItem('mdmd-theme', next); } catch (_) {}
+    });
+}());
+
+/* --------------------------------------------------------------------- *
+ * Indentation hierarchy toggle (bd-1zl)                                *
+ *                                                                       *
+ * Runs unconditionally — no early-return on heading count — so pages   *
+ * with no headings still get a functional toggle and persisted state.   *
+ *                                                                       *
+ * Order of operations:                                                  *
+ *   1. Read persistence from localStorage                               *
+ *   2. Apply / remove root class on <html>  (idempotent with FOUC      *
+ *      inline script that ran before first paint)                       *
+ *   3. Bind button click handler                                        *
+ *                                                                       *
+ * State contract (matches INDENT_INIT_SCRIPT in html.rs):              *
+ *   Storage key : mdmd-indent-hierarchy                                 *
+ *   Legal values: 'on' | 'off'                                         *
+ *   Root class  : indent-hierarchy-on  on  <html>                      *
+ *   Default     : off  (class absent; malformed/missing values → off)  *
+ * --------------------------------------------------------------------- */
+(function () {
+    'use strict';
+
+    var INDENT_KEY   = 'mdmd-indent-hierarchy';
+    var INDENT_ON    = 'on';
+    var INDENT_OFF   = 'off';
+    var INDENT_CLASS = 'indent-hierarchy-on';
+
+    /* Read saved preference; normalize unknown/missing to off. */
+    var saved;
+    try { saved = localStorage.getItem(INDENT_KEY); } catch (_) { saved = null; }
+    var active = saved === INDENT_ON;
+
+    /* Apply class (idempotent — FOUC script already ran). */
+    if (active) {
+        document.documentElement.classList.add(INDENT_CLASS);
+    } else {
+        document.documentElement.classList.remove(INDENT_CLASS);
+    }
+
+    /* Bind toggle button once it exists (added by bd-1zl.2). */
+    var btn = document.getElementById('indent-toggle');
+    if (!btn) { return; }
+
+    btn.addEventListener('click', function () {
+        active = !active;
+        if (active) {
+            document.documentElement.classList.add(INDENT_CLASS);
+            try { localStorage.setItem(INDENT_KEY, INDENT_ON); } catch (_) {}
+        } else {
+            document.documentElement.classList.remove(INDENT_CLASS);
+            try { localStorage.setItem(INDENT_KEY, INDENT_OFF); } catch (_) {}
+        }
     });
 }());
 
