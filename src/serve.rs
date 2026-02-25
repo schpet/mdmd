@@ -1263,6 +1263,11 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16) -> io::
         io::Error::new(io::ErrorKind::InvalidInput, msg)
     })?;
 
+    // Build the startup backlinks index synchronously before server bind.
+    // The index is eventually-stale by design; users must restart the server
+    // after editing files to pick up changes (the println! below reminds them).
+    let _backlinks_index = crate::backlinks::build_backlinks_index(&canonical_root);
+
     // Precompute ETags for embedded static assets (stable for the lifetime of
     // this server process — embedded bytes never change at runtime).
     let css_etag = compute_etag(web_assets::CSS.as_bytes());

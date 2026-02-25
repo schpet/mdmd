@@ -61,6 +61,140 @@ pub fn url_key_from_rel_path(rel: &str) -> String {
 /// Values are all [`BacklinkRef`]s from other documents that link to that target.
 pub type BacklinksIndex = HashMap<String, Vec<BacklinkRef>>;
 
+/// Build the in-memory backlinks index by traversing `serve_root` and
+/// extracting outbound links from all markdown files.
+///
+/// # Traversal rules
+///
+/// - Recursively visits all directories under `serve_root`.
+/// - Skips directories named `.git`, `node_modules`, and `.jj`.
+/// - Processes only files with `.md` or `.markdown` extensions.
+/// - On read error, emits one `eprintln!` line and continues to the next file.
+///
+/// # Index construction
+///
+/// For each outbound link found in a source file a [`BacklinkRef`] is inserted
+/// into the index under the target's URL key.  Self-links (source URL ==
+/// target URL) are silently filtered out.
+///
+/// # Output
+///
+/// After the full traversal emits:
+/// - `eprintln!("[backlinks] indexed files={} edges={}", …)` to stderr
+/// - `println!("backlinks: startup-indexed; restart server after file edits to pick up changes")` to stdout
+pub fn build_backlinks_index(serve_root: &Path) -> BacklinksIndex {
+    use std::collections::VecDeque;
+    use std::fs;
+
+    let mut index: BacklinksIndex = HashMap::new();
+    let mut queue: VecDeque<PathBuf> = VecDeque::new();
+    queue.push_back(serve_root.to_path_buf());
+
+    let mut file_count: usize = 0;
+    let mut edge_count: usize = 0;
+
+    while let Some(dir) = queue.pop_front() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!(
+                    "[backlinks] skipping path='{}' reason='read-error: {}'",
+                    dir.display(),
+                    e
+                );
+                continue;
+            }
+        };
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+
+            if path.is_dir() {
+                // Skip well-known VCS and dependency directories.
+                let dir_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+                if matches!(dir_name, ".git" | "node_modules" | ".jj") {
+                    continue;
+                }
+                queue.push_back(path);
+                continue;
+            }
+
+            // Only process .md and .markdown files.
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            if !matches!(ext, "md" | "markdown") {
+                continue;
+            }
+
+            // Read the file contents; skip on error.
+            let src = match fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!(
+                        "[backlinks] skipping path='{}' reason='read-error: {}'",
+                        path.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            file_count += 1;
+
+            // Extract outbound links and title.
+            let extracted = extract_outbound_links(&src, &path, serve_root);
+
+            // Compute the source URL key.
+            let source_rel = path
+                .strip_prefix(serve_root)
+                .ok()
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let source_url_path = url_key_from_rel_path(&source_rel);
+
+            // Display name: H1 title when present, else rel path without leading slash.
+            let source_display = extracted
+                .title
+                .clone()
+                .unwrap_or_else(|| source_rel.clone());
+
+            // Invert edges into the index, filtering self-links.
+            for outbound in &extracted.outbound_refs {
+                if outbound.target_url_path == source_url_path {
+                    continue; // self-link – skip
+                }
+                edge_count += 1;
+                index
+                    .entry(outbound.target_url_path.clone())
+                    .or_default()
+                    .push(BacklinkRef {
+                        source_url_path: source_url_path.clone(),
+                        source_display: source_display.clone(),
+                        snippet: outbound.snippet.clone(),
+                        target_fragment: outbound.target_fragment.clone(),
+                    });
+            }
+        }
+    }
+
+    eprintln!(
+        "[backlinks] indexed files={} edges={}",
+        file_count, edge_count
+    );
+    println!("backlinks: startup-indexed; restart server after file edits to pick up changes");
+
+    index
+}
+
 /// Normalize an absolute file-system path by resolving `.` and `..` components
 /// using a stack-based approach.
 ///
@@ -313,5 +447,198 @@ mod tests {
         );
         assert_eq!(idx["/target.md"].len(), 1);
         assert_eq!(idx["/target.md"][0].source_url_path, "/source.md");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_backlinks_index unit tests
+    // -----------------------------------------------------------------------
+
+    use tempfile::TempDir;
+
+    /// Create a file at `root/rel_path` with `contents`, creating parent dirs
+    /// as needed.  Returns the absolute `PathBuf` of the created file.
+    fn write_fixture(root: &TempDir, rel_path: &str, contents: &str) -> std::path::PathBuf {
+        let full = root.path().join(rel_path);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&full, contents).unwrap();
+        full
+    }
+
+    #[test]
+    fn build_index_basic_inversion() {
+        // a.md → b.md; b.md should have one backlink from a.md.
+        let tmp = TempDir::new().unwrap();
+        write_fixture(&tmp, "a.md", "# A Doc\n\nSee [B](b.md).\n");
+        write_fixture(&tmp, "b.md", "# B Doc\n\nNo outbound links.\n");
+
+        let idx = build_backlinks_index(tmp.path());
+
+        let refs = idx.get("/b.md").expect("b.md should have a backlink");
+        assert_eq!(refs.len(), 1, "b.md should have exactly one backlink");
+        let r = &refs[0];
+        assert_eq!(r.source_url_path, "/a.md");
+        assert_eq!(r.source_display, "A Doc", "source_display should be H1 title");
+        assert!(!r.snippet.is_empty(), "snippet should not be empty");
+    }
+
+    #[test]
+    fn build_index_no_entry_for_a_when_only_outbound() {
+        // a.md links to b.md; a.md itself should have no backlinks.
+        let tmp = TempDir::new().unwrap();
+        write_fixture(&tmp, "a.md", "See [B](b.md).\n");
+        write_fixture(&tmp, "b.md", "# B\n");
+
+        let idx = build_backlinks_index(tmp.path());
+
+        assert!(
+            !idx.contains_key("/a.md"),
+            "a.md has no inbound links so it must not appear as a key"
+        );
+    }
+
+    #[test]
+    fn build_index_self_links_excluded() {
+        // a.md links to itself; self-link must not appear in the index.
+        let tmp = TempDir::new().unwrap();
+        write_fixture(&tmp, "a.md", "# Self\n\nLink to [self](a.md).\n");
+
+        let idx = build_backlinks_index(tmp.path());
+
+        assert!(
+            !idx.contains_key("/a.md"),
+            "self-link must not produce a backlink entry"
+        );
+    }
+
+    #[test]
+    fn build_index_source_display_fallback_to_path() {
+        // a.md has no H1 title; source_display should fall back to rel path.
+        let tmp = TempDir::new().unwrap();
+        write_fixture(&tmp, "a.md", "No heading here.\n\nSee [B](b.md).\n");
+        write_fixture(&tmp, "b.md", "# B\n");
+
+        let idx = build_backlinks_index(tmp.path());
+
+        let refs = idx.get("/b.md").expect("b.md must have a backlink");
+        assert_eq!(refs[0].source_display, "a.md", "should fall back to rel path");
+    }
+
+    #[test]
+    fn build_index_git_dir_excluded() {
+        // .git/some.md must not be indexed.
+        let tmp = TempDir::new().unwrap();
+        write_fixture(&tmp, "real.md", "# Real\n");
+        write_fixture(&tmp, ".git/secret.md", "# Git internals\n\nSee [real](../real.md).\n");
+
+        let idx = build_backlinks_index(tmp.path());
+
+        // real.md must not receive a backlink from .git/secret.md
+        assert!(
+            !idx.contains_key("/real.md"),
+            ".git directory must be skipped; real.md must not have backlinks"
+        );
+    }
+
+    #[test]
+    fn build_index_node_modules_excluded() {
+        // node_modules/dep.md must not be indexed.
+        let tmp = TempDir::new().unwrap();
+        write_fixture(&tmp, "main.md", "# Main\n");
+        write_fixture(
+            &tmp,
+            "node_modules/dep.md",
+            "# Dep\n\nSee [main](../main.md).\n",
+        );
+
+        let idx = build_backlinks_index(tmp.path());
+
+        assert!(
+            !idx.contains_key("/main.md"),
+            "node_modules directory must be skipped"
+        );
+    }
+
+    #[test]
+    fn build_index_jj_dir_excluded() {
+        // .jj/internal.md must not be indexed.
+        let tmp = TempDir::new().unwrap();
+        write_fixture(&tmp, "doc.md", "# Doc\n");
+        write_fixture(&tmp, ".jj/internal.md", "# JJ\n\nSee [doc](../doc.md).\n");
+
+        let idx = build_backlinks_index(tmp.path());
+
+        assert!(
+            !idx.contains_key("/doc.md"),
+            ".jj directory must be skipped"
+        );
+    }
+
+    #[test]
+    fn build_index_non_markdown_files_skipped() {
+        // Only .md and .markdown files should be processed.
+        let tmp = TempDir::new().unwrap();
+        write_fixture(&tmp, "target.md", "# Target\n");
+        write_fixture(&tmp, "source.txt", "See [target](target.md).\n");
+        write_fixture(&tmp, "source.html", "<a href=\"target.md\">target</a>\n");
+
+        let idx = build_backlinks_index(tmp.path());
+
+        // target.md has no .md/.markdown sources linking to it → no entry
+        assert!(
+            !idx.contains_key("/target.md"),
+            "non-markdown files must not contribute backlinks"
+        );
+    }
+
+    #[test]
+    fn build_index_dot_markdown_extension() {
+        // .markdown extension should be processed.
+        let tmp = TempDir::new().unwrap();
+        write_fixture(&tmp, "source.markdown", "See [target](target.md).\n");
+        write_fixture(&tmp, "target.md", "# Target\n");
+
+        let idx = build_backlinks_index(tmp.path());
+
+        assert!(
+            idx.contains_key("/target.md"),
+            ".markdown extension files must be indexed"
+        );
+        assert_eq!(idx["/target.md"][0].source_url_path, "/source.markdown");
+    }
+
+    #[test]
+    fn build_index_subdirectory_links() {
+        // docs/a.md → docs/b.md: verify key paths include the subdirectory.
+        let tmp = TempDir::new().unwrap();
+        write_fixture(&tmp, "docs/a.md", "# A\n\nSee [B](b.md).\n");
+        write_fixture(&tmp, "docs/b.md", "# B\n");
+
+        let idx = build_backlinks_index(tmp.path());
+
+        let refs = idx
+            .get("/docs/b.md")
+            .expect("docs/b.md must have a backlink");
+        assert_eq!(refs[0].source_url_path, "/docs/a.md");
+    }
+
+    #[test]
+    fn build_index_multiple_sources_to_same_target() {
+        // Both a.md and b.md link to target.md; target should have two backlinks.
+        let tmp = TempDir::new().unwrap();
+        write_fixture(&tmp, "a.md", "# A\n\nSee [T](target.md).\n");
+        write_fixture(&tmp, "b.md", "# B\n\nAlso [T](target.md).\n");
+        write_fixture(&tmp, "target.md", "# Target\n");
+
+        let idx = build_backlinks_index(tmp.path());
+
+        let refs = idx
+            .get("/target.md")
+            .expect("target.md must have backlinks");
+        assert_eq!(refs.len(), 2, "target.md must have exactly two backlinks");
+        let mut sources: Vec<&str> = refs.iter().map(|r| r.source_url_path.as_str()).collect();
+        sources.sort_unstable();
+        assert_eq!(sources, ["/a.md", "/b.md"]);
     }
 }
