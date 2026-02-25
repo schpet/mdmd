@@ -108,6 +108,8 @@ pub struct AppState {
     /// (e.g. `/docs/readme.md`) to all inbound [`BacklinkRef`]s for that page.
     /// Built once at startup; intentionally stale until server restart.
     pub backlinks: HashMap<String, Vec<BacklinkRef>>,
+    /// When true, request handlers emit per-request diagnostic lines to stderr.
+    pub verbose: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -1310,7 +1312,7 @@ async fn freshness_handler(State(state): State<Arc<AppState>>, req: Request) -> 
 /// Binds to `bind_addr` starting at `start_port`, retrying on `EADDRINUSE` up
 /// to 100 times.  The server shuts down cleanly when SIGINT (Ctrl+C) is
 /// received.
-pub async fn run_serve(file: String, bind_addr: String, start_port: u16, _no_open: bool, _verbose: bool) -> io::Result<()> {
+pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open: bool, verbose: bool) -> io::Result<()> {
     // Use CWD as the default serve root.
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let canonical_cwd = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
@@ -1424,6 +1426,9 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, _no_ope
         .and_then(|m| m.modified().ok())
         .unwrap_or(SystemTime::UNIX_EPOCH);
 
+    // no_open gates browser-launch logic added in a later subtask.
+    let _ = no_open;
+
     let state = Arc::new(AppState {
         serve_root,
         canonical_root,
@@ -1434,6 +1439,7 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, _no_ope
         js_etag,
         asset_mtime,
         backlinks,
+        verbose,
     });
 
     let (std_listener, bound_port) = bind_with_retry(&bind_addr, start_port).map_err(|msg| {
