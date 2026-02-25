@@ -20,6 +20,23 @@ use crate::html;
 use crate::web_assets;
 
 // ---------------------------------------------------------------------------
+// Verbose-gated diagnostic helper
+// ---------------------------------------------------------------------------
+
+/// Emit a diagnostic line to stderr only when `$verbose` is true.
+///
+/// Expands to an `if`-guarded `eprintln!`, so format arguments are never
+/// evaluated when `$verbose` is `false`.
+///
+/// Usage in startup code:  `vlog!(verbose, "...")`
+/// Usage in handlers:      `vlog!(state.verbose, "...")`
+macro_rules! vlog {
+    ($verbose:expr, $($args:tt)*) => {
+        if $verbose { eprintln!($($args)*); }
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Tailscale detection
 // ---------------------------------------------------------------------------
 
@@ -55,14 +72,14 @@ pub fn parse_tailscale_dns_name(output: &[u8]) -> Result<String, String> {
 /// Any subprocess error, JSON parse failure, or missing/empty `DNSName` is
 /// silently treated as "no Tailscale available" and logged at debug level.
 /// This function never panics.
-fn tailscale_dns_name() -> Option<String> {
+fn tailscale_dns_name(verbose: bool) -> Option<String> {
     let output = match std::process::Command::new("tailscale")
         .args(["status", "--json"])
         .output()
     {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("[tailscale] skipped reason=subprocess-error: {e}");
+            vlog!(verbose, "[tailscale] skipped reason=subprocess-error: {e}");
             return None;
         }
     };
@@ -70,7 +87,7 @@ fn tailscale_dns_name() -> Option<String> {
     match parse_tailscale_dns_name(&output.stdout) {
         Ok(name) => Some(name),
         Err(reason) => {
-            eprintln!("[tailscale] skipped reason={reason}");
+            vlog!(verbose, "[tailscale] skipped reason={reason}");
             None
         }
     }
@@ -202,19 +219,23 @@ pub fn not_modified_since(ims_header: &str, mtime: SystemTime) -> bool {
 ///
 /// Returns the bound `TcpListener` and the actual port on success, or a
 /// descriptive `String` error on failure.
-pub fn bind_with_retry(bind_addr: &str, start_port: u16) -> Result<(TcpListener, u16), String> {
+pub fn bind_with_retry(
+    bind_addr: &str,
+    start_port: u16,
+    verbose: bool,
+) -> Result<(TcpListener, u16), String> {
     let mut port = start_port;
-    eprintln!("[bind] trying port={}", port);
+    vlog!(verbose, "[bind] trying port={}", port);
     for _ in 0..MAX_PORT_ATTEMPTS {
         let addr = format!("{}:{}", bind_addr, port);
         match TcpListener::bind(&addr) {
             Ok(listener) => {
-                eprintln!("[bind] success port={}", port);
+                vlog!(verbose, "[bind] success port={}", port);
                 return Ok((listener, port));
             }
             Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
                 let next = port.wrapping_add(1);
-                eprintln!("[bind] EADDRINUSE, trying {}", next);
+                vlog!(verbose, "[bind] EADDRINUSE, trying {}", next);
                 port = next;
             }
             Err(e) => {
@@ -637,11 +658,15 @@ async fn rich_not_found_response(state: &Arc<AppState>, norm_display: &str) -> R
 </html>"
     );
 
-    eprintln!(
+    vlog!(
+        state.verbose,
         "[404] path={norm_display} nearest_parent={}",
         nearest_parent.display()
     );
-    eprintln!("[request] path={norm_display} mode=rich_404 nearest_parent={parent_url}");
+    vlog!(
+        state.verbose,
+        "[request] path={norm_display} mode=rich_404 nearest_parent={parent_url}"
+    );
 
     Response::builder()
         .status(StatusCode::NOT_FOUND)
@@ -786,7 +811,8 @@ async fn render_directory_index_response(
                     match tokio::fs::canonicalize(&entry_path).await {
                         Ok(target) if target.starts_with(&state.canonical_root) => {}
                         _ => {
-                            eprintln!(
+                            vlog!(
+                                state.verbose,
                                 "[dir-index] omit out-of-root symlink name={name} dir={}",
                                 dir_path.display()
                             );
@@ -834,8 +860,9 @@ async fn render_directory_index_response(
     body.push_str("</ul></body></html>");
 
     let etag = compute_etag(body.as_bytes());
-    eprintln!("[dir-index] path={url_prefix} entries={}", entries.len());
-    eprintln!(
+    vlog!(state.verbose, "[dir-index] path={url_prefix} entries={}", entries.len());
+    vlog!(
+        state.verbose,
         "[request] path={url_prefix} mode=directory_index entries={}",
         entries.len()
     );
@@ -902,7 +929,7 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     } else {
         "none"
     };
-    eprintln!("[compression] encoding={compression_enc}");
+    vlog!(state.verbose, "[compression] encoding={compression_enc}");
 
     // Step 0: serve embedded static assets early — no filesystem access needed.
     if raw_path == "/assets/mdmd.css" {
@@ -913,18 +940,18 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
         // Evaluate If-None-Match first (RFC 7232 §6 preference order).
         if let Some(ref inm) = if_none_match {
             if etag_matches(inm, etag) {
-                eprintln!("[cache] path={raw_path} etag={etag} status=304");
+                vlog!(state.verbose, "[cache] path={raw_path} etag={etag} status=304");
                 return not_modified_response(etag, &last_modified);
             }
         } else if let Some(ref ims) = if_modified_since {
             if not_modified_since(ims, state.asset_mtime) {
-                eprintln!("[cache] path={raw_path} etag={etag} status=304");
+                vlog!(state.verbose, "[cache] path={raw_path} etag={etag} status=304");
                 return not_modified_response(etag, &last_modified);
             }
         }
 
-        eprintln!("[cache] path={raw_path} etag={etag} status=200");
-        eprintln!("[request] path={raw_path} mode=asset");
+        vlog!(state.verbose, "[cache] path={raw_path} etag={etag} status=200");
+        vlog!(state.verbose, "[request] path={raw_path} mode=asset");
         return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "text/css; charset=utf-8")
@@ -941,18 +968,18 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
 
         if let Some(ref inm) = if_none_match {
             if etag_matches(inm, etag) {
-                eprintln!("[cache] path={raw_path} etag={etag} status=304");
+                vlog!(state.verbose, "[cache] path={raw_path} etag={etag} status=304");
                 return not_modified_response(etag, &last_modified);
             }
         } else if let Some(ref ims) = if_modified_since {
             if not_modified_since(ims, state.asset_mtime) {
-                eprintln!("[cache] path={raw_path} etag={etag} status=304");
+                vlog!(state.verbose, "[cache] path={raw_path} etag={etag} status=304");
                 return not_modified_response(etag, &last_modified);
             }
         }
 
-        eprintln!("[cache] path={raw_path} etag={etag} status=200");
-        eprintln!("[request] path={raw_path} mode=asset");
+        vlog!(state.verbose, "[cache] path={raw_path} etag={etag} status=200");
+        vlog!(state.verbose, "[request] path={raw_path} mode=asset");
         return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "text/javascript; charset=utf-8")
@@ -967,14 +994,14 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     let decoded = match percent_decode(&raw_path) {
         Ok(d) => d,
         Err(_) => {
-            eprintln!("[resolve] path={raw_path} branch=denied reason=invalid-percent-encoding");
+            vlog!(state.verbose, "[resolve] path={raw_path} branch=denied reason=invalid-percent-encoding");
             return not_found_response();
         }
     };
 
     // Reject null bytes anywhere in the decoded path.
     if decoded.contains('\0') {
-        eprintln!("[resolve] path={raw_path} branch=denied reason=null-byte");
+        vlog!(state.verbose, "[resolve] path={raw_path} branch=denied reason=null-byte");
         return not_found_response();
     }
 
@@ -982,7 +1009,7 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     let normalized = match normalize_path(&decoded) {
         Some(n) => n,
         None => {
-            eprintln!("[resolve] path={raw_path} branch=denied reason=path-traversal");
+            vlog!(state.verbose, "[resolve] path={raw_path} branch=denied reason=path-traversal");
             return not_found_response();
         }
     };
@@ -993,7 +1020,8 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     // bypassing resolve_candidate() entirely.  This ensures GET / always shows
     // a browsable listing even when README.md exists at the project root.
     if normalized == PathBuf::new() {
-        eprintln!(
+        vlog!(
+            state.verbose,
             "[resolve] path=/ branch=dir-index dir={}",
             state.canonical_root.display()
         );
@@ -1012,7 +1040,8 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
             if let Ok(meta) = tokio::fs::metadata(&candidate).await {
                 if meta.is_dir() {
                     let url_prefix = format!("/{norm_display}");
-                    eprintln!(
+                    vlog!(
+                        state.verbose,
                         "[resolve] path={norm_display} branch=dir-index dir={}",
                         candidate.display()
                     );
@@ -1020,7 +1049,7 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
                         .await;
                 }
             }
-            eprintln!("[resolve] path={norm_display} branch=not-found");
+            vlog!(state.verbose, "[resolve] path={norm_display} branch=not-found");
             return rich_not_found_response(&state, &norm_display).await;
         }
     };
@@ -1029,13 +1058,14 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     let canonical = match tokio::fs::canonicalize(&resolved).await {
         Ok(c) => c,
         Err(_) => {
-            eprintln!("[resolve] path={norm_display} branch=denied reason=canonicalize-failed");
+            vlog!(state.verbose, "[resolve] path={norm_display} branch=denied reason=canonicalize-failed");
             return not_found_response();
         }
     };
 
     if !canonical.starts_with(&state.canonical_root) {
-        eprintln!(
+        vlog!(
+            state.verbose,
             "[resolve] path={norm_display} branch=denied reason=outside-root canonical={}",
             canonical.display()
         );
@@ -1046,7 +1076,7 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     let file_meta = match tokio::fs::metadata(&canonical).await {
         Ok(m) => m,
         Err(_) => {
-            eprintln!("[resolve] path={norm_display} branch=denied reason=metadata-failed");
+            vlog!(state.verbose, "[resolve] path={norm_display} branch=denied reason=metadata-failed");
             return not_found_response();
         }
     };
@@ -1054,11 +1084,11 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     let mtime = file_meta.modified().ok();
 
     if size > MAX_FILE_SIZE {
-        eprintln!("[resolve] path={norm_display} branch=denied reason=too-large size={size}");
+        vlog!(state.verbose, "[resolve] path={norm_display} branch=denied reason=too-large size={size}");
         return too_large_response(&norm_display, size);
     }
 
-    eprintln!("[resolve] path={norm_display} branch={branch} size={size}");
+    vlog!(state.verbose, "[resolve] path={norm_display} branch={branch} size={size}");
 
     // Step 7: dispatch on extension.
     let ext = canonical.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -1079,20 +1109,20 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
 
             if let Some(ref inm) = if_none_match {
                 if etag_matches(inm, &etag) {
-                    eprintln!("[cache] path={norm_display} etag={etag} status=304");
+                    vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=304");
                     return not_modified_response(&etag, &last_modified);
                 }
             } else if let Some(ref ims) = if_modified_since {
                 if let Some(mt) = mtime {
                     if not_modified_since(ims, mt) {
-                        eprintln!("[cache] path={norm_display} etag={etag} status=304");
+                        vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=304");
                         return not_modified_response(&etag, &last_modified);
                     }
                 }
             }
 
-            eprintln!("[cache] path={norm_display} etag={etag} status=200");
-            eprintln!("[request] path={norm_display} mode=raw");
+            vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=200");
+            vlog!(state.verbose, "[request] path={norm_display} mode=raw");
             return Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
@@ -1108,7 +1138,7 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
             html::render_markdown(&content, &canonical, &state.canonical_root);
         let key = crate::backlinks::url_key_from_rel_path(&norm_display);
         let backlinks_slice = state.backlinks.get(&key).map(Vec::as_slice).unwrap_or(&[]);
-        eprintln!("[backlinks] key={key} found={}", backlinks_slice.len());
+        vlog!(state.verbose, "[backlinks] key={key} found={}", backlinks_slice.len());
         let file_mtime_secs = mtime
             .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
             .map(|d| d.as_secs());
@@ -1132,20 +1162,20 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
 
         if let Some(ref inm) = if_none_match {
             if etag_matches(inm, &etag) {
-                eprintln!("[cache] path={norm_display} etag={etag} status=304");
+                vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=304");
                 return not_modified_response(&etag, &last_modified);
             }
         } else if let Some(ref ims) = if_modified_since {
             if let Some(mt) = mtime {
                 if not_modified_since(ims, mt) {
-                    eprintln!("[cache] path={norm_display} etag={etag} status=304");
+                    vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=304");
                     return not_modified_response(&etag, &last_modified);
                 }
             }
         }
 
-        eprintln!("[cache] path={norm_display} etag={etag} status=200");
-        eprintln!("[request] path={norm_display} mode=rendered");
+        vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=200");
+        vlog!(state.verbose, "[request] path={norm_display} mode=rendered");
         Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
@@ -1168,20 +1198,20 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
 
         if let Some(ref inm) = if_none_match {
             if etag_matches(inm, &etag) {
-                eprintln!("[cache] path={norm_display} etag={etag} status=304");
+                vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=304");
                 return not_modified_response(&etag, &last_modified);
             }
         } else if let Some(ref ims) = if_modified_since {
             if let Some(mt) = mtime {
                 if not_modified_since(ims, mt) {
-                    eprintln!("[cache] path={norm_display} etag={etag} status=304");
+                    vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=304");
                     return not_modified_response(&etag, &last_modified);
                 }
             }
         }
 
-        eprintln!("[cache] path={norm_display} etag={etag} status=200");
-        eprintln!("[request] path={norm_display} mode=static_asset");
+        vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=200");
+        vlog!(state.verbose, "[request] path={norm_display} mode=static_asset");
         let content_type = mime_for_ext(ext);
         Response::builder()
             .status(StatusCode::OK)
@@ -1231,14 +1261,14 @@ async fn freshness_handler(State(state): State<Arc<AppState>>, req: Request) -> 
     let decoded = match percent_decode(path_raw) {
         Ok(d) => d,
         Err(_) => {
-            eprintln!("[freshness] path={path_raw} reason=invalid-percent-encoding");
+            vlog!(state.verbose, "[freshness] path={path_raw} reason=invalid-percent-encoding");
             return freshness_404();
         }
     };
 
     // Reject null bytes.
     if decoded.contains('\0') {
-        eprintln!("[freshness] reason=null-byte");
+        vlog!(state.verbose, "[freshness] reason=null-byte");
         return freshness_404();
     }
 
@@ -1246,14 +1276,14 @@ async fn freshness_handler(State(state): State<Arc<AppState>>, req: Request) -> 
     let normalized = match normalize_path(&decoded) {
         Some(n) => n,
         None => {
-            eprintln!("[freshness] reason=path-traversal");
+            vlog!(state.verbose, "[freshness] reason=path-traversal");
             return freshness_404();
         }
     };
 
     // Reject empty path (points to root directory, not a file).
     if normalized == std::path::PathBuf::new() {
-        eprintln!("[freshness] reason=empty-path");
+        vlog!(state.verbose, "[freshness] reason=empty-path");
         return freshness_404();
     }
 
@@ -1264,14 +1294,14 @@ async fn freshness_handler(State(state): State<Arc<AppState>>, req: Request) -> 
     let canonical = match tokio::fs::canonicalize(&candidate).await {
         Ok(c) => c,
         Err(_) => {
-            eprintln!("[freshness] path={display_path} reason=canonicalize-failed");
+            vlog!(state.verbose, "[freshness] path={display_path} reason=canonicalize-failed");
             return freshness_404();
         }
     };
 
     // Containment check: must stay within canonical_root.
     if !canonical.starts_with(&state.canonical_root) {
-        eprintln!("[freshness] path={display_path} reason=outside-root");
+        vlog!(state.verbose, "[freshness] path={display_path} reason=outside-root");
         return freshness_404();
     }
 
@@ -1279,7 +1309,7 @@ async fn freshness_handler(State(state): State<Arc<AppState>>, req: Request) -> 
     let meta = match tokio::fs::metadata(&canonical).await {
         Ok(m) => m,
         Err(_) => {
-            eprintln!("[freshness] path={display_path} reason=metadata-failed");
+            vlog!(state.verbose, "[freshness] path={display_path} reason=metadata-failed");
             return freshness_404();
         }
     };
@@ -1292,7 +1322,7 @@ async fn freshness_handler(State(state): State<Arc<AppState>>, req: Request) -> 
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    eprintln!("[freshness] path={display_path} mtime={mtime_secs}");
+    vlog!(state.verbose, "[freshness] path={display_path} mtime={mtime_secs}");
 
     let body = serde_json::json!({ "mtime": mtime_secs }).to_string();
     Response::builder()
@@ -1442,10 +1472,11 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open
         verbose,
     });
 
-    let (std_listener, bound_port) = bind_with_retry(&bind_addr, start_port).map_err(|msg| {
-        eprintln!("Error: {}", msg);
-        io::Error::new(io::ErrorKind::AddrInUse, msg)
-    })?;
+    let (std_listener, bound_port) =
+        bind_with_retry(&bind_addr, start_port, verbose).map_err(|msg| {
+            eprintln!("Error: {}", msg);
+            io::Error::new(io::ErrorKind::AddrInUse, msg)
+        })?;
 
     std_listener.set_nonblocking(true)?;
     let listener = tokio::net::TcpListener::from_std(std_listener)?;
@@ -1459,8 +1490,9 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open
         .with_state(state.clone())
         .layer(CompressionLayer::new());
 
-    eprintln!("[serve] listening on {}:{}", bind_addr, bound_port);
-    eprintln!(
+    vlog!(verbose, "[serve] listening on {}:{}", bind_addr, bound_port);
+    vlog!(
+        verbose,
         "[serve] serve_root={} entry_url_path={}",
         state.canonical_root.display(),
         state.entry_url_path
@@ -1470,7 +1502,7 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open
     println!("http://127.0.0.1:{bound_port}{}", state.entry_url_path);
 
     // Conditionally print Tailscale URLs when available.
-    let tailscale_host = tokio::task::spawn_blocking(tailscale_dns_name)
+    let tailscale_host = tokio::task::spawn_blocking(move || tailscale_dns_name(verbose))
         .await
         .ok()
         .flatten();
@@ -1479,11 +1511,11 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open
     }
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
+        .with_graceful_shutdown(async move {
             signal::ctrl_c()
                 .await
                 .expect("failed to install SIGINT handler");
-            eprintln!("[shutdown] complete");
+            vlog!(verbose, "[shutdown] complete");
         })
         .await
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
@@ -2252,5 +2284,60 @@ mod tests {
             .expect("/docs/b.md must have a backlink from /docs/a.md");
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].source_url_path, "/docs/a.md");
+    }
+
+    // --- vlog! macro ---
+
+    /// `vlog!(false, ...)` must not evaluate format arguments.
+    ///
+    /// The format argument contains a side effect (incrementing a counter).
+    /// Because the `vlog!` body is inside `if false { ... }`, the block is
+    /// never entered, so the counter must remain 0.
+    #[test]
+    fn vlog_suppressed_when_verbose_false() {
+        let mut count = 0i32;
+        vlog!(false, "{}", {
+            count += 1;
+            count
+        });
+        assert_eq!(count, 0, "vlog!(false, ...) must not evaluate format args");
+    }
+
+    /// `vlog!(true, ...)` must evaluate format arguments and produce output.
+    ///
+    /// The format argument contains a side effect (incrementing a counter).
+    /// With verbose=true the `eprintln!` body runs, so the counter must be 1.
+    #[test]
+    fn vlog_runs_when_verbose_true() {
+        let mut count = 0i32;
+        vlog!(true, "{}", {
+            count += 1;
+            count
+        });
+        assert_eq!(count, 1, "vlog!(true, ...) must evaluate format args");
+    }
+
+    /// Verify that `bind_with_retry` propagates the verbose flag.
+    ///
+    /// With `verbose=false` no `[bind]` lines should appear; the function
+    /// must still succeed when a free port is available.  We check the
+    /// return value only — stderr capture is avoided per the test guidelines.
+    #[test]
+    fn bind_with_retry_succeeds_with_verbose_false() {
+        let result = bind_with_retry("127.0.0.1", 0, false);
+        // Port 0 lets the OS pick a free port — should always succeed.
+        assert!(
+            result.is_ok(),
+            "bind_with_retry with verbose=false must succeed on a free port"
+        );
+    }
+
+    #[test]
+    fn bind_with_retry_succeeds_with_verbose_true() {
+        let result = bind_with_retry("127.0.0.1", 0, true);
+        assert!(
+            result.is_ok(),
+            "bind_with_retry with verbose=true must succeed on a free port"
+        );
     }
 }

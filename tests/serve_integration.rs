@@ -163,6 +163,35 @@ impl ServerHandle {
         }
     }
 
+    /// Like [`Self::new`] but passes `--verbose` to the server process.
+    fn new_verbose(scenario: &str, fixture: &Fixture) -> Self {
+        let port = free_port();
+        eprintln!("[TEST] scenario={} port={} verbose=true", scenario, port);
+
+        let mut child = Command::new(bin_path())
+            .arg("serve")
+            .arg("--verbose")
+            .arg("--bind")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg(port.to_string())
+            .arg(&fixture.entry)
+            .current_dir(&fixture.root)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn mdmd serve --verbose");
+
+        let base_url = format!("http://127.0.0.1:{port}");
+        wait_for_server_ready(&mut child, &base_url);
+
+        Self {
+            child: Some(child),
+            base_url,
+            port,
+        }
+    }
+
     fn url(&self, path_and_query: &str) -> String {
         format!("{}{}", self.base_url, path_and_query)
     }
@@ -1649,7 +1678,8 @@ fn test_serve_symlink_outside_root_denied_with_outside_root_log() {
         root: docs.clone(),
         entry,
     };
-    let server = ServerHandle::new(
+    // Use --verbose so that [resolve] diagnostic lines are emitted.
+    let server = ServerHandle::new_verbose(
         "test_serve_symlink_outside_root_denied_with_outside_root_log",
         &fixture,
     );
@@ -2339,5 +2369,66 @@ fn test_cross_dir_block_narrow_root() {
     assert_status(
         &resp,
         404,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// bd-1zw: verbose-gated diagnostic helper — E2E coverage
+// ---------------------------------------------------------------------------
+
+/// Default startup (no --verbose) must emit zero informational stderr lines
+/// in the `[serve]` and `[bind]` categories.
+#[cfg(unix)]
+#[test]
+fn test_default_startup_no_informational_stderr() {
+    let fixture = Fixture::new(FixtureOptions::default());
+    let server = ServerHandle::new("test_default_startup_no_informational_stderr", &fixture);
+
+    // Make one request to ensure the server processed at least one event.
+    let _ = fetch(&client(), &server.url("/"));
+
+    let output = server.shutdown_with_sigint();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !stderr.contains("[serve]"),
+        "[serve] must be absent from stderr without --verbose\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("[bind]"),
+        "[bind] must be absent from stderr without --verbose\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("[request]"),
+        "[request] must be absent from stderr without --verbose\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("[shutdown]"),
+        "[shutdown] must be absent from stderr without --verbose\nstderr:\n{stderr}"
+    );
+}
+
+/// With --verbose, startup diagnostics in `[serve]` and `[bind]` categories
+/// must appear in stderr.
+#[cfg(unix)]
+#[test]
+fn test_verbose_startup_diagnostics_emitted() {
+    let fixture = Fixture::new(FixtureOptions::default());
+    let server =
+        ServerHandle::new_verbose("test_verbose_startup_diagnostics_emitted", &fixture);
+
+    // Make one request to ensure the server processed at least one event.
+    let _ = fetch(&client(), &server.url("/"));
+
+    let output = server.shutdown_with_sigint();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("[serve]"),
+        "[serve] must appear in stderr with --verbose\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("[bind]"),
+        "[bind] must appear in stderr with --verbose\nstderr:\n{stderr}"
     );
 }
