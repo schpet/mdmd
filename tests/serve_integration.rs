@@ -1788,8 +1788,13 @@ fn test_backlinks_panel_empty() {
     let body = resp.body_text();
 
     assert!(
-        body.contains("No backlinks yet."),
-        "empty state must show 'No backlinks yet.'\n{}",
+        !body.contains("No backlinks yet."),
+        "empty state must not show 'No backlinks yet.'\n{}",
+        resp.context()
+    );
+    assert!(
+        !body.contains("backlinks-empty"),
+        "empty state must not render aside\n{}",
         resp.context()
     );
     assert!(

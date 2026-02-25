@@ -520,12 +520,12 @@ This file has changed on disk.\n\
 
 /// Build the HTML fragment for the backlinks section.
 ///
-/// Returns an empty-state aside when there are no backlinks.
+/// Returns an empty string when there are no backlinks (section is omitted).
 /// Otherwise renders a bordered footnote-style section below the document
 /// content with one entry per source document and a count in the header.
 fn build_backlinks_html(backlinks: &[BacklinkRef]) -> String {
     if backlinks.is_empty() {
-        return "<aside class=\"backlinks-empty\"><p>No backlinks yet.</p></aside>\n".to_owned();
+        return String::new();
     }
 
     let count = backlinks.len();
@@ -1270,8 +1270,12 @@ mod tests {
             "empty state must render no backlinks section, got: {page}"
         );
         assert!(
-            page.contains("No backlinks yet."),
-            "empty state must show 'No backlinks yet.' text, got: {page}"
+            !page.contains("No backlinks yet."),
+            "empty state must not show 'No backlinks yet.' text, got: {page}"
+        );
+        assert!(
+            !page.contains("backlinks-empty"),
+            "empty state must not render aside, got: {page}"
         );
     }
 
