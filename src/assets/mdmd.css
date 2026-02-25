@@ -18,6 +18,7 @@
     --color-notice-bg:        #fff3cd;
     --color-notice-border:    #ffc107;
     --color-notice-btn:       #ffc107;
+    --indent-step:            1.25rem;
 }
 
 :root[data-theme="dark"] {
@@ -444,4 +445,35 @@ body {
     .layout {
         padding: 0.75rem;
     }
+}
+
+/* ---- bd-1zl.6.1: Depth-based spacing for generated outline sections ---- */
+
+/* Base state: wrappers are display:block with no indentation.
+ * Padding starts at 0 so the indent-hierarchy-on class can animate
+ * from 0 to the depth value (bd-1zl.6.2 adds transitions). */
+.indent-section {
+    display: block;
+    padding-inline-start: 0;
+}
+
+/* When indent-hierarchy-on is active, apply depth-proportional indentation
+ * to generated section wrappers only.  Logical property keeps RTL correct. */
+:root.indent-hierarchy-on .indent-section[data-depth='1'] {
+    padding-inline-start: calc(var(--indent-step) * 1);
+}
+:root.indent-hierarchy-on .indent-section[data-depth='2'] {
+    padding-inline-start: calc(var(--indent-step) * 2);
+}
+:root.indent-hierarchy-on .indent-section[data-depth='3'] {
+    padding-inline-start: calc(var(--indent-step) * 3);
+}
+:root.indent-hierarchy-on .indent-section[data-depth='4'] {
+    padding-inline-start: calc(var(--indent-step) * 4);
+}
+:root.indent-hierarchy-on .indent-section[data-depth='5'] {
+    padding-inline-start: calc(var(--indent-step) * 5);
+}
+:root.indent-hierarchy-on .indent-section[data-depth='6'] {
+    padding-inline-start: calc(var(--indent-step) * 6);
 }
