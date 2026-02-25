@@ -51,6 +51,9 @@ log_pass() {
 log_fail() {
     echo "FAIL  [$CURRENT_SCENARIO]  $*" >&2
     FAIL=$((FAIL + 1))
+    echo "" >&2
+    echo "Assertion failed in scenario '$CURRENT_SCENARIO'. Exiting. See $LOG_DIR for logs." >&2
+    exit 1
 }
 
 assert_stdout_contains_url() {
@@ -186,6 +189,11 @@ run_scenario() {
     local extra_args_csv="$3"      # e.g. "--verbose,--no-open"
     local env_overrides_csv="$4"   # e.g. "CI=1,DISPLAY=:99"
     local env_remove_csv="$5"      # e.g. "CI,GITHUB_ACTIONS"
+
+    # Reset globals so stale output from a previous scenario cannot leak into
+    # assertions for this scenario (e.g. when the server fails to start).
+    SCENARIO_STDOUT=""
+    SCENARIO_STDERR=""
 
     local stdout_log="$LOG_DIR/${name}_stdout.log"
     local stderr_log="$LOG_DIR/${name}_stderr.log"
