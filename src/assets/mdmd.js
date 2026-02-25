@@ -24,6 +24,10 @@
         )
     );
 
+    /* No headings: skip TOC observer setup entirely.  The indentation-hierarchy
+     * toggle runs in its own IIFE below and is unaffected by this return. */
+    if (headingEls.length === 0) { return; }
+
     /* Track which heading IDs are currently intersecting (in the top 20% of
      * the viewport).  The topmost one in document order becomes "active". */
     var visibleIds = new Set();
