@@ -18,6 +18,11 @@ const MAX_FILE_SIZE: u64 = 16 * 1024 * 1024;
 struct FixtureOptions {
     include_subdir_readme: bool,
     include_large_file: bool,
+    /// Create a `.hidden-dotfile` in the root (for directory-listing exclusion tests).
+    include_dotfiles: bool,
+    /// Create a `nested/` subdirectory containing `nested-doc.md` and `nested/inner/`
+    /// (for deep directory listing and nested-structure tests).
+    include_nested_dirs: bool,
 }
 
 impl Default for FixtureOptions {
@@ -25,6 +30,8 @@ impl Default for FixtureOptions {
         Self {
             include_subdir_readme: true,
             include_large_file: false,
+            include_dotfiles: false,
+            include_nested_dirs: false,
         }
     }
 }
@@ -67,6 +74,18 @@ impl Fixture {
             let file = fs::File::create(path).expect("create oversized file");
             file.set_len(MAX_FILE_SIZE + 1)
                 .expect("set oversized file len");
+        }
+
+        if opts.include_dotfiles {
+            fs::write(root.join(".hidden-dotfile"), "hidden content\n")
+                .expect("write dotfile");
+        }
+
+        if opts.include_nested_dirs {
+            let nested = root.join("nested");
+            fs::create_dir_all(nested.join("inner")).expect("create nested/inner dir");
+            fs::write(nested.join("nested-doc.md"), "# Nested Doc\n")
+                .expect("write nested/nested-doc.md");
         }
 
         Self {
@@ -1358,4 +1377,114 @@ fn test_serve_nested_entry_rewritten_link_targets_reachable() {
     // /subdir/sibling — extensionless resolve (adds .md).
     let resp = fetch(&c, &server.url("/subdir/sibling"));
     assert_status(&resp, 200);
+}
+
+// ---------------------------------------------------------------------------
+// bd-3h2: full navigation flow — root-index-flow
+// ---------------------------------------------------------------------------
+
+/// End-to-end navigation flow starting at the root directory index.
+///
+/// Validates that:
+/// 1. `GET /` returns a directory listing (not entry markdown source).
+/// 2. The listing contains a navigable href to the entry document.
+/// 3. Following that href returns rendered markdown HTML (200, text/html).
+/// 4. The entry HTML contains a rendered heading, confirming it is not raw source.
+///
+/// Run with: RUST_LOG=debug cargo test --test serve_integration test_serve_root_index_links_to_entry -- --nocapture
+#[test]
+fn test_serve_root_index_links_to_entry() {
+    let fixture = Fixture::new(FixtureOptions::default());
+    let server = ServerHandle::new("test_serve_root_index_links_to_entry", &fixture);
+    let c = client();
+
+    // Step 1: Root index must be a directory listing.
+    let index_resp = fetch(&c, &server.url("/"));
+    assert_status(&index_resp, 200);
+    assert_header_contains(&index_resp, "content-type", "text/html");
+    let index_body = index_resp.body_text();
+    assert!(
+        index_body.contains("Index of /"),
+        "GET / must return directory index\n{}",
+        index_resp.context()
+    );
+
+    // Step 2: Listing must contain a navigable href to the entry document.
+    // The fixture entry is root/README.md, so the listing must include href="/README.md".
+    assert!(
+        index_body.contains("href=\"/README.md\""),
+        "root index must contain href to entry document /README.md\n{}",
+        index_resp.context()
+    );
+
+    // Step 3: Following the entry link must return rendered markdown HTML.
+    let entry_resp = fetch(&c, &server.url("/README.md"));
+    assert_status(&entry_resp, 200);
+    assert_header_contains(&entry_resp, "content-type", "text/html");
+
+    // Step 4: Rendered HTML must contain a heading, confirming markdown was processed.
+    let entry_body = entry_resp.body_text();
+    assert!(
+        entry_body.contains("<h1"),
+        "entry document must render as HTML with an h1 heading\n{}",
+        entry_resp.context()
+    );
+    // Raw markdown source must not be served.
+    assert!(
+        !entry_body.contains("# Home"),
+        "entry response must not contain raw markdown source\n{}",
+        entry_resp.context()
+    );
+}
+
+/// Verifies that `FixtureOptions::include_dotfiles` creates a dotfile and that
+/// it is excluded from directory listings, and that `include_nested_dirs`
+/// creates a navigable nested directory structure.
+#[test]
+fn test_fixture_options_dotfiles_and_nested_dirs() {
+    let fixture = Fixture::new(FixtureOptions {
+        include_subdir_readme: false,
+        include_large_file: false,
+        include_dotfiles: true,
+        include_nested_dirs: true,
+    });
+    let server = ServerHandle::new("test_fixture_options_dotfiles_and_nested_dirs", &fixture);
+    let c = client();
+
+    // Root index must NOT list the dotfile.
+    let root_resp = fetch(&c, &server.url("/"));
+    assert_status(&root_resp, 200);
+    let root_body = root_resp.body_text();
+    assert!(
+        !root_body.contains(".hidden-dotfile"),
+        "dotfile must be excluded from root listing\n{}",
+        root_resp.context()
+    );
+
+    // Nested directory must be listed and navigable.
+    assert!(
+        root_body.contains("nested"),
+        "nested/ dir must appear in root listing\n{}",
+        root_resp.context()
+    );
+
+    // GET /nested/ must list nested-doc.md and inner/.
+    let nested_resp = fetch(&c, &server.url("/nested/"));
+    assert_status(&nested_resp, 200);
+    let nested_body = nested_resp.body_text();
+    assert!(
+        nested_body.contains("nested-doc.md"),
+        "nested-doc.md must appear in /nested/ listing\n{}",
+        nested_resp.context()
+    );
+    assert!(
+        nested_body.contains("inner"),
+        "inner/ subdir must appear in /nested/ listing\n{}",
+        nested_resp.context()
+    );
+
+    // Nested markdown doc must be directly reachable and render as HTML.
+    let doc_resp = fetch(&c, &server.url("/nested/nested-doc.md"));
+    assert_status(&doc_resp, 200);
+    assert_header_contains(&doc_resp, "content-type", "text/html");
 }
