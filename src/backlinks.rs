@@ -167,10 +167,18 @@ pub fn build_backlinks_index(serve_root: &Path) -> BacklinksIndex {
                 .clone()
                 .unwrap_or_else(|| source_rel.clone());
 
-            // Invert edges into the index, filtering self-links.
+            // Invert edges into the index, filtering self-links and duplicate
+            // (source → target) pairs.  When a source file contains multiple
+            // links to the same target we emit only the first one so the
+            // backlinks panel shows each source document at most once.
+            let mut seen_targets: std::collections::HashSet<&str> =
+                std::collections::HashSet::new();
             for outbound in &extracted.outbound_refs {
                 if outbound.target_url_path == source_url_path {
                     continue; // self-link – skip
+                }
+                if !seen_targets.insert(outbound.target_url_path.as_str()) {
+                    continue; // duplicate source→target – skip
                 }
                 edge_count += 1;
                 index
@@ -357,7 +365,7 @@ pub(crate) fn extract_outbound_links(
                 let target_url_path = url_key_from_rel_path(&rel_str);
 
                 // Build the context snippet: ~80 bytes before/after the link,
-                // whitespace-collapsed, capped at 200 chars.
+                // rendered to plain text (strips markdown syntax), capped at 200 chars.
                 // Adjust to char boundaries so we never slice mid-multibyte-char.
                 let mut snippet_start = ls.saturating_sub(80);
                 while snippet_start > 0 && !src.is_char_boundary(snippet_start) {
@@ -368,15 +376,7 @@ pub(crate) fn extract_outbound_links(
                     snippet_end += 1;
                 }
                 let raw_snippet = &src[snippet_start..snippet_end];
-                let collapsed = raw_snippet
-                    .split_ascii_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let snippet = if collapsed.len() > 200 {
-                    collapsed[..200].to_owned()
-                } else {
-                    collapsed
-                };
+                let snippet = strip_markdown_to_plain(raw_snippet, 200);
 
                 result.outbound_refs.push(OutboundRef {
                     target_url_path,
@@ -390,6 +390,50 @@ pub(crate) fn extract_outbound_links(
     }
 
     result
+}
+
+/// Render a raw markdown fragment to plain text, stripping all markdown syntax.
+///
+/// Uses pulldown_cmark to parse the fragment and collect only text/code leaf
+/// events, so headings, link syntax, table pipes, emphasis markers, etc. are
+/// all silently dropped.  The result is whitespace-collapsed and capped at
+/// `max_chars` characters.
+fn strip_markdown_to_plain(raw: &str, max_chars: usize) -> String {
+    use pulldown_cmark::{Event, Options, Parser};
+
+    let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
+    let mut plain = String::new();
+    for event in Parser::new_ext(raw, options) {
+        match event {
+            Event::Text(t) | Event::Code(t) => {
+                if !plain.is_empty() {
+                    plain.push(' ');
+                }
+                plain.push_str(&t);
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                plain.push(' ');
+            }
+            _ => {}
+        }
+    }
+
+    // Collapse runs of whitespace.
+    let collapsed: String = plain
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if collapsed.len() > max_chars {
+        // Truncate at a char boundary.
+        let mut end = max_chars;
+        while end > 0 && !collapsed.is_char_boundary(end) {
+            end -= 1;
+        }
+        collapsed[..end].to_owned()
+    } else {
+        collapsed
+    }
 }
 
 #[cfg(test)]
@@ -640,5 +684,89 @@ mod tests {
         let mut sources: Vec<&str> = refs.iter().map(|r| r.source_url_path.as_str()).collect();
         sources.sort_unstable();
         assert_eq!(sources, ["/a.md", "/b.md"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // bd-2ag: cross-directory link resolution with broad and narrow serve_root
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_outbound_links_cross_dir_broad_root_included() {
+        // serve_root = /broad (broad), source = /broad/docs/a.md
+        // link: ../other/b.md → resolves to /broad/other/b.md (inside broad root → INCLUDED)
+        let src = "# A Doc\n\nSee [B](../other/b.md).\n";
+        let result = extract_outbound_links(
+            src,
+            Path::new("/broad/docs/a.md"),
+            Path::new("/broad"),
+        );
+        assert_eq!(
+            result.outbound_refs.len(),
+            1,
+            "cross-dir link inside broad root must be included in outbound_refs"
+        );
+        assert_eq!(
+            result.outbound_refs[0].target_url_path,
+            "/other/b.md",
+            "target URL path must be root-relative /other/b.md"
+        );
+    }
+
+    #[test]
+    fn extract_outbound_links_cross_dir_narrow_root_excluded() {
+        // serve_root = /broad/docs (narrow), source = /broad/docs/a.md
+        // link: ../other/b.md → resolves to /broad/other/b.md (outside /broad/docs → EXCLUDED)
+        let src = "# A Doc\n\nSee [B](../other/b.md).\n";
+        let result = extract_outbound_links(
+            src,
+            Path::new("/broad/docs/a.md"),
+            Path::new("/broad/docs"),
+        );
+        assert!(
+            result.outbound_refs.is_empty(),
+            "cross-dir link escaping narrow serve_root must be excluded from outbound_refs"
+        );
+    }
+
+    #[test]
+    fn build_index_cross_dir_sibling_edge_broad_root_recorded() {
+        // docs/a.md → ../other/b.md; serve_root = tmp.path() (broad root covering both dirs)
+        // Both sibling directories are under the root → edge must be recorded.
+        let tmp = TempDir::new().unwrap();
+        write_fixture(&tmp, "docs/a.md", "# A Doc\n\nSee [B](../other/b.md).\n");
+        write_fixture(&tmp, "other/b.md", "# B Doc\n");
+
+        let idx = build_backlinks_index(tmp.path());
+
+        let refs = idx
+            .get("/other/b.md")
+            .expect("other/b.md must have a backlink from docs/a.md with broad root");
+        assert_eq!(
+            refs.len(),
+            1,
+            "other/b.md must have exactly one backlink"
+        );
+        assert_eq!(
+            refs[0].source_url_path,
+            "/docs/a.md",
+            "backlink source must be /docs/a.md"
+        );
+    }
+
+    #[test]
+    fn build_index_cross_dir_link_outside_root_not_recorded() {
+        // a.md links to ../outside.md; serve_root = tmp.path() (root)
+        // ../outside.md resolves one level above tmp.path() (outside root) → edge must be dropped.
+        let tmp = TempDir::new().unwrap();
+        write_fixture(&tmp, "a.md", "# A Doc\n\nSee [outside](../outside.md).\n");
+        // Note: ../outside.md resolves above tmp.path(); no file is created there.
+
+        let idx = build_backlinks_index(tmp.path());
+
+        // The index must be empty: no in-root edges were produced.
+        assert!(
+            idx.is_empty(),
+            "link escaping serve_root must not produce any backlink edge; index must be empty"
+        );
     }
 }

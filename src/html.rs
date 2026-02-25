@@ -1088,6 +1088,58 @@ mod tests {
         assert!(result.is_none(), "path escaping root must return None");
     }
 
+    // --- bd-2ag: cross-directory link resolution with broad and narrow serve_root ---
+
+    #[test]
+    fn rewrite_url_cross_dir_broad_root_allows() {
+        // serve_root = /tmp (broad), file_dir = /tmp/docs
+        // link: ../other/b.md → resolves to /tmp/other/b.md
+        // strip_prefix(/tmp) = other/b.md → "/other/b.md" (inside broad root → ALLOWED)
+        let result = rewrite_url(
+            "../other/b.md",
+            Path::new("/tmp/docs"),
+            Path::new("/tmp"),
+        );
+        assert_eq!(
+            result,
+            Some("/other/b.md".to_owned()),
+            "cross-dir link inside broad root must rewrite to root-relative href"
+        );
+    }
+
+    #[test]
+    fn rewrite_url_cross_dir_narrow_root_blocks() {
+        // serve_root = /tmp/docs (narrow), file_dir = /tmp/docs
+        // link: ../other/b.md → resolves to /tmp/other/b.md
+        // strip_prefix(/tmp/docs) fails (target escapes narrow root) → None (BLOCKED)
+        let result = rewrite_url(
+            "../other/b.md",
+            Path::new("/tmp/docs"),
+            Path::new("/tmp/docs"),
+        );
+        assert!(
+            result.is_none(),
+            "cross-dir link escaping narrow serve_root must return None"
+        );
+    }
+
+    #[test]
+    fn rewrite_url_sibling_dir_cwd_root_allows() {
+        // serve_root = /workspace (CWD), file_dir = /workspace/docs
+        // link: ../sibling/page.md → resolves to /workspace/sibling/page.md
+        // strip_prefix(/workspace) = sibling/page.md → "/sibling/page.md" (ALLOWED)
+        let result = rewrite_url(
+            "../sibling/page.md",
+            Path::new("/workspace/docs"),
+            Path::new("/workspace"),
+        );
+        assert_eq!(
+            result,
+            Some("/sibling/page.md".to_owned()),
+            "sibling-dir link inside CWD root must rewrite to root-relative href"
+        );
+    }
+
     // --- bd-t6w: CWD-root nested entry regression guards ---
     //
     // When serve_root = CWD (e.g. /workspace) and the entry file lives in a

@@ -1492,3 +1492,185 @@ fn test_fixture_options_dotfiles_and_nested_dirs() {
     assert_status(&doc_resp, 200);
     assert_header_contains(&doc_resp, "content-type", "text/html");
 }
+
+// ---------------------------------------------------------------------------
+// bd-2ag: cross-directory link resolution — broad root allows, narrow root blocks
+// ---------------------------------------------------------------------------
+
+/// Validates that cross-directory links resolve when both the source and target
+/// reside within the selected serve_root (broad root scenario).
+///
+/// Fixture layout:
+///   parent/               ← serve_root (CWD = parent/)
+///     docs/
+///       a.md              ← entry; links to ../other/b.md
+///     other/
+///       b.md              ← cross-dir target (inside broad root)
+///
+/// Expected:
+/// - GET /other/b.md → 200 (target is inside broad root)
+/// - GET /docs/a.md → 200; body contains href="/other/b.md" (link rewritten)
+#[test]
+fn test_serve_cross_dir_link_broad_root_allows() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let parent = tmp.path().to_path_buf();
+
+    let docs = parent.join("docs");
+    let other = parent.join("other");
+    fs::create_dir_all(&docs).expect("create docs dir");
+    fs::create_dir_all(&other).expect("create other dir");
+
+    fs::write(
+        docs.join("a.md"),
+        "# Doc A\n\nSee [Doc B](../other/b.md).\n",
+    )
+    .expect("write docs/a.md");
+    fs::write(other.join("b.md"), "# Doc B\n\nContent of B.\n").expect("write other/b.md");
+
+    // Broad root: CWD = parent (entry docs/a.md is inside parent → serve_root = parent)
+    let fixture = Fixture {
+        _tmp: tmp,
+        root: parent.clone(),
+        entry: docs.join("a.md"),
+    };
+    let server = ServerHandle::new("test_serve_cross_dir_link_broad_root_allows", &fixture);
+    let c = client();
+
+    // Cross-dir target /other/b.md is inside broad root → must be accessible.
+    let resp = fetch(&c, &server.url("/other/b.md"));
+    assert_status(&resp, 200);
+    assert!(
+        resp.body_text().contains("Doc B"),
+        "cross-dir target /other/b.md must be accessible with broad root\n{}",
+        resp.context()
+    );
+
+    // Entry /docs/a.md must be accessible and its link rewritten to /other/b.md.
+    let resp = fetch(&c, &server.url("/docs/a.md"));
+    assert_status(&resp, 200);
+    let body = resp.body_text();
+    assert!(
+        body.contains("href=\"/other/b.md\""),
+        "cross-dir link must be rewritten to root-relative /other/b.md with broad root\n{}",
+        resp.context()
+    );
+}
+
+/// Validates that cross-directory links are blocked when the target resides
+/// outside the selected serve_root (narrow root scenario).
+///
+/// Fixture layout:
+///   parent/
+///     docs/               ← serve_root (CWD = parent/docs/)
+///       a.md              ← entry; links to ../other/b.md (NOT rewritten: escapes root)
+///     other/
+///       b.md              ← cross-dir target (OUTSIDE narrow root)
+///
+/// Expected:
+/// - GET /other/b.md → 404 (resolves to docs/other/b.md which does not exist)
+/// - GET /a.md → 200; body does NOT contain href="/other/b.md" (link stays unrewritten)
+#[test]
+fn test_serve_cross_dir_link_narrow_root_blocks() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let parent = tmp.path().to_path_buf();
+
+    let docs = parent.join("docs");
+    let other = parent.join("other");
+    fs::create_dir_all(&docs).expect("create docs dir");
+    fs::create_dir_all(&other).expect("create other dir");
+
+    fs::write(
+        docs.join("a.md"),
+        "# Doc A\n\nSee [Doc B](../other/b.md).\n",
+    )
+    .expect("write docs/a.md");
+    fs::write(other.join("b.md"), "# Doc B\n\nContent of B.\n").expect("write other/b.md");
+
+    // Narrow root: CWD = docs (entry docs/a.md is inside docs/ → serve_root = docs/)
+    let fixture = Fixture {
+        _tmp: tmp,
+        root: docs.clone(),
+        entry: docs.join("a.md"),
+    };
+    let server = ServerHandle::new("test_serve_cross_dir_link_narrow_root_blocks", &fixture);
+    let c = client();
+
+    // Cross-dir target is outside narrow root: /other/b.md resolves to docs/other/b.md
+    // which does not exist → must return 404.
+    let resp = fetch(&c, &server.url("/other/b.md"));
+    assert_status(&resp, 404);
+
+    // Entry /a.md is inside narrow root → accessible.
+    let resp = fetch(&c, &server.url("/a.md"));
+    assert_status(&resp, 200);
+    let body = resp.body_text();
+
+    // Link must NOT be rewritten to /other/b.md (target escapes narrow serve_root).
+    // It stays as the original relative ../other/b.md in the rendered output.
+    assert!(
+        !body.contains("href=\"/other/b.md\""),
+        "cross-dir link must NOT be rewritten for narrow root (target escapes root)\n{}",
+        resp.context()
+    );
+    assert!(
+        body.contains("href=\"../other/b.md\""),
+        "unrewritten cross-dir link must remain as ../other/b.md in narrow root\n{}",
+        resp.context()
+    );
+}
+
+/// Validates that a symlink inside the serve_root pointing to a file outside
+/// the root is denied with a 404, and that the server logs the denial with
+/// `branch=denied reason=outside-root`.
+///
+/// This exercises the containment check at serve.rs step 5 (R1) and verifies
+/// the log line emitted there for the blocked path.
+#[cfg(unix)]
+#[test]
+fn test_serve_symlink_outside_root_denied_with_outside_root_log() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let parent = tmp.path().to_path_buf();
+
+    let docs = parent.join("docs");
+    let other = parent.join("other");
+    fs::create_dir_all(&docs).expect("create docs dir");
+    fs::create_dir_all(&other).expect("create other dir");
+
+    let entry = docs.join("a.md");
+    fs::write(&entry, "# Doc A\n").expect("write docs/a.md");
+
+    let outside_target = other.join("b.md");
+    fs::write(&outside_target, "# Doc B\n").expect("write other/b.md");
+
+    // Create a symlink inside the narrow root (docs/) that points to outside (other/b.md).
+    let symlink_path = docs.join("escape.md");
+    symlink(&outside_target, &symlink_path).expect("create symlink");
+
+    // Narrow root: CWD = docs/
+    let fixture = Fixture {
+        _tmp: tmp,
+        root: docs.clone(),
+        entry,
+    };
+    let server = ServerHandle::new(
+        "test_serve_symlink_outside_root_denied_with_outside_root_log",
+        &fixture,
+    );
+    let c = client();
+
+    // Symlink target is outside narrow root → must be denied.
+    let resp = fetch(&c, &server.url("/escape.md"));
+    assert_status(&resp, 404);
+
+    // Shut down and collect server output to verify the denial log.
+    let output = server.shutdown_with_sigint();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("branch=denied") && stderr.contains("reason=outside-root"),
+        "symlink escape must log branch=denied reason=outside-root\nstderr:\n{}",
+        stderr
+    );
+}
