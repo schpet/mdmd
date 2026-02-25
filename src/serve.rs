@@ -93,6 +93,95 @@ fn tailscale_dns_name(verbose: bool) -> Option<String> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Headed-environment detection
+// ---------------------------------------------------------------------------
+
+/// The runtime platform, used by [`is_headed_for`] to apply platform-specific rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimePlatform {
+    MacOs,
+    Linux,
+    Other,
+}
+
+/// A snapshot of the environment variables relevant to headed-environment detection.
+///
+/// All fields are booleans indicating whether the corresponding variable is
+/// present (and non-empty) in the process environment at the time of the snapshot.
+#[derive(Debug, Clone, Copy)]
+pub struct EnvSnapshot {
+    /// Whether `SSH_CONNECTION` is set (non-empty).
+    pub ssh_connection: bool,
+    /// Whether `SSH_TTY` is set (non-empty).
+    pub ssh_tty: bool,
+    /// Whether `DISPLAY` is set (non-empty).
+    pub display: bool,
+    /// Whether `WAYLAND_DISPLAY` is set (non-empty).
+    pub wayland_display: bool,
+    /// Whether `CI` is set (non-empty).
+    pub ci: bool,
+    /// Whether `GITHUB_ACTIONS` is set (non-empty).
+    pub github_actions: bool,
+}
+
+/// Pure, testable headed-environment predicate.
+///
+/// Applies platform-specific rules to determine whether a browser open would
+/// succeed in the current execution context:
+///
+/// - **macOS**: `true` unless `SSH_CONNECTION` or `SSH_TTY` is set.
+/// - **Linux**: `true` only when `DISPLAY` or `WAYLAND_DISPLAY` is set, *and*
+///   none of `SSH_CONNECTION`, `SSH_TTY`, `CI`, or `GITHUB_ACTIONS` is set.
+/// - **Other**: always `false`.
+///
+/// This function accepts explicit inputs so it can be exercised in unit tests
+/// without mutating the global process environment.
+pub fn is_headed_for(platform: RuntimePlatform, env: &EnvSnapshot) -> bool {
+    match platform {
+        RuntimePlatform::MacOs => !env.ssh_connection && !env.ssh_tty,
+        RuntimePlatform::Linux => {
+            (env.display || env.wayland_display)
+                && !env.ssh_connection
+                && !env.ssh_tty
+                && !env.ci
+                && !env.github_actions
+        }
+        RuntimePlatform::Other => false,
+    }
+}
+
+/// Detect whether the current process is running in a headed environment.
+///
+/// Reads the actual process environment and detects the current platform via
+/// `cfg(target_os = ...)`, then delegates to [`is_headed_for`].
+///
+/// This is the production entry point.  For unit testing, call [`is_headed_for`]
+/// directly with a synthetic [`EnvSnapshot`].
+pub fn is_headed_environment() -> bool {
+    fn env_set(key: &str) -> bool {
+        std::env::var_os(key).map_or(false, |v| !v.is_empty())
+    }
+
+    let env = EnvSnapshot {
+        ssh_connection: env_set("SSH_CONNECTION"),
+        ssh_tty: env_set("SSH_TTY"),
+        display: env_set("DISPLAY"),
+        wayland_display: env_set("WAYLAND_DISPLAY"),
+        ci: env_set("CI"),
+        github_actions: env_set("GITHUB_ACTIONS"),
+    };
+
+    #[cfg(target_os = "macos")]
+    let platform = RuntimePlatform::MacOs;
+    #[cfg(target_os = "linux")]
+    let platform = RuntimePlatform::Linux;
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let platform = RuntimePlatform::Other;
+
+    is_headed_for(platform, &env)
+}
+
 /// Maximum number of consecutive ports to try before giving up.
 const MAX_PORT_ATTEMPTS: u16 = 100;
 
@@ -2339,5 +2428,138 @@ mod tests {
             result.is_ok(),
             "bind_with_retry with verbose=true must succeed on a free port"
         );
+    }
+
+    // --- is_headed_for ---
+
+    /// Helper: a fully-clear env snapshot (no env vars set).
+    fn clear_env() -> EnvSnapshot {
+        EnvSnapshot {
+            ssh_connection: false,
+            ssh_tty: false,
+            display: false,
+            wayland_display: false,
+            ci: false,
+            github_actions: false,
+        }
+    }
+
+    // macOS rules
+
+    #[test]
+    fn macos_no_ssh_is_headed() {
+        let env = clear_env();
+        assert!(is_headed_for(RuntimePlatform::MacOs, &env));
+    }
+
+    #[test]
+    fn macos_ssh_connection_is_not_headed() {
+        let env = EnvSnapshot { ssh_connection: true, ..clear_env() };
+        assert!(!is_headed_for(RuntimePlatform::MacOs, &env));
+    }
+
+    #[test]
+    fn macos_ssh_tty_is_not_headed() {
+        let env = EnvSnapshot { ssh_tty: true, ..clear_env() };
+        assert!(!is_headed_for(RuntimePlatform::MacOs, &env));
+    }
+
+    #[test]
+    fn macos_both_ssh_vars_is_not_headed() {
+        let env = EnvSnapshot { ssh_connection: true, ssh_tty: true, ..clear_env() };
+        assert!(!is_headed_for(RuntimePlatform::MacOs, &env));
+    }
+
+    /// macOS with DISPLAY set but no SSH — still headed (DISPLAY is irrelevant on macOS).
+    #[test]
+    fn macos_display_set_no_ssh_is_headed() {
+        let env = EnvSnapshot { display: true, ..clear_env() };
+        assert!(is_headed_for(RuntimePlatform::MacOs, &env));
+    }
+
+    // Linux rules
+
+    #[test]
+    fn linux_display_no_ssh_no_ci_is_headed() {
+        let env = EnvSnapshot { display: true, ..clear_env() };
+        assert!(is_headed_for(RuntimePlatform::Linux, &env));
+    }
+
+    #[test]
+    fn linux_wayland_no_ssh_no_ci_is_headed() {
+        let env = EnvSnapshot { wayland_display: true, ..clear_env() };
+        assert!(is_headed_for(RuntimePlatform::Linux, &env));
+    }
+
+    #[test]
+    fn linux_both_display_vars_no_ssh_no_ci_is_headed() {
+        let env = EnvSnapshot { display: true, wayland_display: true, ..clear_env() };
+        assert!(is_headed_for(RuntimePlatform::Linux, &env));
+    }
+
+    #[test]
+    fn linux_no_display_no_wayland_is_not_headed() {
+        let env = clear_env(); // display=false, wayland_display=false
+        assert!(!is_headed_for(RuntimePlatform::Linux, &env));
+    }
+
+    #[test]
+    fn linux_display_ssh_connection_is_not_headed() {
+        let env = EnvSnapshot { display: true, ssh_connection: true, ..clear_env() };
+        assert!(!is_headed_for(RuntimePlatform::Linux, &env));
+    }
+
+    #[test]
+    fn linux_display_ssh_tty_is_not_headed() {
+        let env = EnvSnapshot { display: true, ssh_tty: true, ..clear_env() };
+        assert!(!is_headed_for(RuntimePlatform::Linux, &env));
+    }
+
+    #[test]
+    fn linux_display_ci_is_not_headed() {
+        let env = EnvSnapshot { display: true, ci: true, ..clear_env() };
+        assert!(!is_headed_for(RuntimePlatform::Linux, &env));
+    }
+
+    #[test]
+    fn linux_display_github_actions_is_not_headed() {
+        let env = EnvSnapshot { display: true, github_actions: true, ..clear_env() };
+        assert!(!is_headed_for(RuntimePlatform::Linux, &env));
+    }
+
+    #[test]
+    fn linux_wayland_ci_is_not_headed() {
+        let env = EnvSnapshot { wayland_display: true, ci: true, ..clear_env() };
+        assert!(!is_headed_for(RuntimePlatform::Linux, &env));
+    }
+
+    #[test]
+    fn linux_wayland_ssh_connection_is_not_headed() {
+        let env = EnvSnapshot { wayland_display: true, ssh_connection: true, ..clear_env() };
+        assert!(!is_headed_for(RuntimePlatform::Linux, &env));
+    }
+
+    // Other platform rules
+
+    #[test]
+    fn other_platform_always_not_headed() {
+        // Even with a display set, unknown platforms return false.
+        let env = EnvSnapshot { display: true, wayland_display: true, ..clear_env() };
+        assert!(!is_headed_for(RuntimePlatform::Other, &env));
+    }
+
+    #[test]
+    fn other_platform_clear_env_not_headed() {
+        assert!(!is_headed_for(RuntimePlatform::Other, &clear_env()));
+    }
+
+    // is_headed_environment wrapper sanity test
+
+    #[test]
+    fn is_headed_environment_returns_bool() {
+        // We can't control the actual environment here, but we can verify the
+        // function returns without panicking and produces a valid bool.
+        let result = is_headed_environment();
+        assert!(result == true || result == false);
     }
 }
