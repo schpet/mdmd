@@ -324,6 +324,11 @@ window.mdmd = window.mdmd || {};
             if (done) { return; }
             done = true;
             mainEl.removeEventListener('transitionend', doUnwrap);
+            /* Idempotency guard (bd-1zl.4.2): if the state was toggled back
+             * to ON before the transition completed, the wrappers are still
+             * in the DOM and the class has been re-added — skip unwrap so
+             * DOM and class stay in sync. */
+            if (document.documentElement.classList.contains(INDENT_CLASS)) { return; }
             unwrapOutlineSections(mainEl);
         }
         setTimeout(doUnwrap, 350);
