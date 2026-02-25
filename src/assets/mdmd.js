@@ -204,6 +204,81 @@
         mainEl.dataset.indentActive = '1';
     }
 
+    /* --- bd-1zl.4.1: Canonical unwrap (OFF restore path) ------------------- *
+     *                                                                          *
+     * Removes all generated wrappers (data-indent-generated="1") from under   *
+     * mainEl in reverse document order, moving their children back in place.  *
+     * Only wrappers bearing the generated marker are touched; authored         *
+     * <section> nodes are never removed.                                       *
+     *                                                                          *
+     * Algorithm:                                                               *
+     *   1. Select wrappers in reverse document order (deepest-first).         *
+     *   2. For each wrapper, move all child nodes before the wrapper.         *
+     *   3. Remove the now-empty wrapper.                                       *
+     *   4. Clear mainEl.dataset.indentActive.                                 *
+     *                                                                          *
+     * OFF guard: if the active marker is absent the transform was never        *
+     * applied (or already removed) — return immediately as a no-op.           *
+     * ----------------------------------------------------------------------- */
+    function unwrapOutlineSections(mainEl) {
+        if (!mainEl || !mainEl.dataset.indentActive) { return; }
+
+        /* querySelectorAll returns document order; reverse for deepest-first
+         * so inner wrappers are unwrapped before their parents. */
+        var wrappers = Array.from(
+            mainEl.querySelectorAll('[data-indent-generated="1"]')
+        ).reverse();
+
+        wrappers.forEach(function (wrapper) {
+            /* Move all children before the wrapper, preserving document order. */
+            while (wrapper.firstChild) {
+                wrapper.parentNode.insertBefore(wrapper.firstChild, wrapper);
+            }
+            wrapper.parentNode.removeChild(wrapper);
+        });
+
+        delete mainEl.dataset.indentActive;
+    }
+
+    /* --- bd-1zl.4.1: Transition-aware OFF sequencing ----------------------- *
+     *                                                                          *
+     * 1. Remove root class first so CSS padding can animate to baseline.      *
+     * 2. Persist OFF state immediately (aria/localStorage stays consistent     *
+     *    even if the caller is a no-op).                                      *
+     * 3. Prefers-reduced-motion: unwrap immediately without waiting.          *
+     * 4. Otherwise: listen for transitionend on mainEl; a 350 ms timeout      *
+     *    fallback ensures OFF never hangs when no transition fires.           *
+     * ----------------------------------------------------------------------- */
+    function applyIndentOff(mainEl) {
+        /* Class removal first — CSS animation starts from this point. */
+        document.documentElement.classList.remove(INDENT_CLASS);
+        try { localStorage.setItem(INDENT_KEY, INDENT_OFF); } catch (_) {}
+
+        /* OFF guard: nothing to unwrap if transform was never applied. */
+        if (!mainEl || !mainEl.dataset.indentActive) { return; }
+
+        var prefersReduced = window.matchMedia &&
+            window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+        if (prefersReduced) {
+            unwrapOutlineSections(mainEl);
+            return;
+        }
+
+        /* Transition-aware path: unwrap after CSS completes.  The timeout
+         * fires unconditionally so unwrap cannot be skipped when the element
+         * carries no transition (e.g. before bd-1zl.6 CSS lands). */
+        var done = false;
+        function doUnwrap() {
+            if (done) { return; }
+            done = true;
+            mainEl.removeEventListener('transitionend', doUnwrap);
+            unwrapOutlineSections(mainEl);
+        }
+        setTimeout(doUnwrap, 350);
+        mainEl.addEventListener('transitionend', doUnwrap, { once: true });
+    }
+
     /* Read saved preference; normalize unknown/missing to off. */
     var saved;
     try { saved = localStorage.getItem(INDENT_KEY); } catch (_) { saved = null; }
@@ -232,12 +307,14 @@
         if (active) {
             document.documentElement.classList.add(INDENT_CLASS);
             try { localStorage.setItem(INDENT_KEY, INDENT_ON); } catch (_) {}
+            /* ON guard (bd-1zl.4.2): skip transform if already applied. */
             if (mainEl && !mainEl.dataset.indentActive) {
                 buildOutlineSections(mainEl);
             }
         } else {
-            document.documentElement.classList.remove(INDENT_CLASS);
-            try { localStorage.setItem(INDENT_KEY, INDENT_OFF); } catch (_) {}
+            /* OFF path uses transition-aware sequencing with unwrap (bd-1zl.4.1).
+             * OFF guard inside applyIndentOff handles the already-off case. */
+            applyIndentOff(mainEl);
         }
     });
 }());
