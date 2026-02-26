@@ -1648,17 +1648,16 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open
         state.entry_url_path
     );
 
-    // Startup stdout: bare URL only — no labels.
-    // Prefer the Tailscale hostname when available; fall back to localhost.
+    // Startup stdout: bare URL(s) only — no labels.
+    // Tailscale URL first (when available), then localhost.
     let tailscale_host = tokio::task::spawn_blocking(move || tailscale_dns_name(verbose))
         .await
         .ok()
         .flatten();
     if let Some(ref host) = tailscale_host {
         println!("http://{host}:{bound_port}{}", state.entry_url_path);
-    } else {
-        println!("http://127.0.0.1:{bound_port}{}", state.entry_url_path);
     }
+    println!("http://127.0.0.1:{bound_port}{}", state.entry_url_path);
 
     // Attempt to open the entry URL in the default browser (fire-and-forget).
     // Must run after all stdout URL lines are printed so the URL is visible
@@ -1915,37 +1914,39 @@ mod tests {
     }
 
     /// When tailscale is present the startup URL block emits exactly one bare URL
-    /// line using the tailscale hostname — no local 127.0.0.1 line, no labels.
+    /// When tailscale is present the startup URL block emits exactly two bare URL
+    /// lines: tailscale first, localhost second — no labels.
     #[test]
-    fn startup_url_block_tailscale_only_when_tailscale_present() {
+    fn startup_url_block_tailscale_first_local_second_when_tailscale_present() {
         let port: u16 = 8080;
         let path = "/guide.md";
         let ts_host = "myhost.ts.net";
 
         let tailscale_host: Option<&str> = Some(ts_host);
-        let block: Vec<String> = if let Some(h) = tailscale_host {
-            vec![format!("http://{h}:{port}{path}")]
-        } else {
-            vec![format!("http://127.0.0.1:{port}{path}")]
-        };
+        let mut block: Vec<String> = vec![];
+        if let Some(h) = tailscale_host {
+            block.push(format!("http://{h}:{port}{path}"));
+        }
+        block.push(format!("http://127.0.0.1:{port}{path}"));
 
-        assert_eq!(block.len(), 1, "expected exactly one URL line when tailscale is present");
+        assert_eq!(block.len(), 2, "expected exactly two URL lines when tailscale is present");
         assert!(
             block[0].starts_with("http://myhost.ts.net:"),
-            "sole line must be tailscale URL, got: {:?}",
+            "first line must be tailscale URL, got: {:?}",
             block[0]
         );
         assert!(
-            !block[0].starts_with("http://127.0.0.1:"),
-            "must not emit local URL when tailscale is available, got: {:?}",
-            block[0]
+            block[1].starts_with("http://127.0.0.1:"),
+            "second line must be local URL, got: {:?}",
+            block[1]
         );
-        for forbidden in &["url:", "index:", "mdmd serve", "root:", "entry:"] {
-            assert!(
-                !block[0].starts_with(forbidden),
-                "startup URL block must not contain label {forbidden:?}, line: {:?}",
-                block[0]
-            );
+        for line in &block {
+            for forbidden in &["url:", "index:", "mdmd serve", "root:", "entry:"] {
+                assert!(
+                    !line.starts_with(forbidden),
+                    "startup URL block must not contain label {forbidden:?}, line: {line:?}"
+                );
+            }
         }
     }
 

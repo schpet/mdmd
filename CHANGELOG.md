@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- serve now prints both tailscale and localhost URLs at startup
+
 ## [0.2.2] - 2026-02-26
 
 ### Fixed
