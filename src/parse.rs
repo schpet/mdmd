@@ -88,7 +88,9 @@ pub struct Link {
 #[derive(Debug, Clone)]
 pub struct ParsedDocument {
     pub blocks: Vec<ContentBlock>,
+    #[allow(dead_code)]
     pub headings: Vec<Heading>,
+    #[allow(dead_code)]
     pub links: Vec<Link>,
 }
 
@@ -236,12 +238,10 @@ pub fn parse(source: &str) -> ParsedDocument {
                     }
                     // Insert newlines between list items / table rows for
                     // cleaner flattened content.
-                    if block_depth >= 1 {
-                        if matches!(tag, Tag::Item | Tag::TableRow) {
-                            if !text_buf.is_empty() && !text_buf.ends_with('\n') {
-                                text_buf.push('\n');
-                            }
-                        }
+                    if block_depth >= 1
+                        && matches!(tag, Tag::Item | Tag::TableRow)
+                        && !text_buf.is_empty() && !text_buf.ends_with('\n') {
+                        text_buf.push('\n');
                     }
                     block_depth += 1;
                 }

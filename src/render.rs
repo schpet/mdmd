@@ -56,6 +56,7 @@ pub struct LinkPosition {
     /// Destination URL.
     pub url: String,
     /// Display text of the link.
+    #[allow(dead_code)]
     pub text: String,
 }
 

@@ -89,10 +89,9 @@ fn slugify(text: &str) -> String {
     for c in text.to_lowercase().chars() {
         if c.is_alphanumeric() {
             slug.push(c);
-        } else if c == ' ' || c == '-' || c == '_' {
-            if !slug.ends_with('-') {
-                slug.push('-');
-            }
+        } else if (c == ' ' || c == '-' || c == '_')
+            && !slug.ends_with('-') {
+            slug.push('-');
         }
         // all other characters are dropped
     }
@@ -221,7 +220,7 @@ fn rewrite_mermaid_code_blocks<'a>(root: &'a AstNode<'a>) -> usize {
 /// The suffix starts at the first `?` or `#` character (whichever comes first).
 /// Returns `(base, suffix)` where `suffix` may be empty.
 fn split_url_suffix(url: &str) -> (&str, &str) {
-    match url.find(|c| c == '?' || c == '#') {
+    match url.find(['?', '#']) {
         Some(pos) => (&url[..pos], &url[pos..]),
         None => (url, ""),
     }
@@ -447,7 +446,7 @@ pub fn build_page_shell(
     body_html: &str,
     headings: &[HeadingEntry],
     file_path: &Path,
-    serve_root: &Path,
+    _serve_root: &Path,
     ctx: &PageShellContext,
 ) -> String {
     // Page title: first H1 text, then file stem, then a safe default.

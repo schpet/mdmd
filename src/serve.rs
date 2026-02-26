@@ -100,8 +100,10 @@ fn tailscale_dns_name(verbose: bool) -> Option<String> {
 /// The runtime platform, used by [`is_headed_for`] to apply platform-specific rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimePlatform {
+    #[allow(dead_code)]
     MacOs,
     Linux,
+    #[allow(dead_code)]
     Other,
 }
 
@@ -160,7 +162,7 @@ pub fn is_headed_for(platform: RuntimePlatform, env: &EnvSnapshot) -> bool {
 /// directly with a synthetic [`EnvSnapshot`].
 pub fn is_headed_environment() -> bool {
     fn env_set(key: &str) -> bool {
-        std::env::var_os(key).map_or(false, |v| !v.is_empty())
+        std::env::var_os(key).is_some_and(|v| !v.is_empty())
     }
 
     let env = EnvSnapshot {
@@ -259,10 +261,12 @@ pub struct AppState {
     /// Canonicalized `serve_root` used for symlink-safe containment checks (R1).
     pub canonical_root: PathBuf,
     /// The primary markdown entry file.
+    #[allow(dead_code)]
     pub entry_file: PathBuf,
     /// URL path for the primary entry file (percent-encoded, starts with `/`).
     pub entry_url_path: String,
     /// Server configuration.
+    #[allow(dead_code)]
     pub config: AppConfig,
     /// Precomputed strong ETag for the embedded CSS asset (`/assets/mdmd.css`).
     pub css_etag: String,
@@ -449,9 +453,7 @@ pub fn normalize_path(decoded: &str) -> Option<PathBuf> {
             "" | "." => {}
             ".." => {
                 // Attempted traversal above root → reject.
-                if parts.pop().is_none() {
-                    return None;
-                }
+                parts.pop()?;
             }
             name => parts.push(name),
         }
@@ -1176,7 +1178,7 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
             "[resolve] path=/ branch=dir-index dir={}",
             state.canonical_root.display()
         );
-        return render_directory_index_response(&*state, &state.canonical_root, "/").await;
+        return render_directory_index_response(&state, &state.canonical_root, "/").await;
     }
 
     // Non-root paths: construct candidate relative to serve_root.
@@ -1196,7 +1198,7 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
                         "[resolve] path={norm_display} branch=dir-index dir={}",
                         candidate.display()
                     );
-                    return render_directory_index_response(&*state, &candidate, &url_prefix)
+                    return render_directory_index_response(&state, &candidate, &url_prefix)
                         .await;
                 }
             }
@@ -1646,16 +1648,16 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open
         state.entry_url_path
     );
 
-    // Startup stdout: bare URL(s) only — no labels.
-    println!("http://127.0.0.1:{bound_port}{}", state.entry_url_path);
-
-    // Conditionally print Tailscale URLs when available.
+    // Startup stdout: bare URL only — no labels.
+    // Prefer the Tailscale hostname when available; fall back to localhost.
     let tailscale_host = tokio::task::spawn_blocking(move || tailscale_dns_name(verbose))
         .await
         .ok()
         .flatten();
     if let Some(ref host) = tailscale_host {
         println!("http://{host}:{bound_port}{}", state.entry_url_path);
+    } else {
+        println!("http://127.0.0.1:{bound_port}{}", state.entry_url_path);
     }
 
     // Attempt to open the entry URL in the default browser (fire-and-forget).
@@ -1682,7 +1684,7 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open
             vlog!(verbose, "[shutdown] complete");
         })
         .await
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
 
     Ok(())
 }
@@ -1912,36 +1914,38 @@ mod tests {
         assert_eq!(line, "http://127.0.0.1:4321/README.md");
     }
 
-    /// The full startup URL block emits exactly two bare URL lines when tailscale
-    /// is present: local first, tailscale second — no labels, no index lines.
+    /// When tailscale is present the startup URL block emits exactly one bare URL
+    /// line using the tailscale hostname — no local 127.0.0.1 line, no labels.
     #[test]
-    fn startup_url_block_local_first_tailscale_second_no_labels() {
+    fn startup_url_block_tailscale_only_when_tailscale_present() {
         let port: u16 = 8080;
         let path = "/guide.md";
         let ts_host = "myhost.ts.net";
 
-        let local_line = format!("http://127.0.0.1:{port}{path}");
-        let ts_line = format!("http://{ts_host}:{port}{path}");
-        let block: Vec<&str> = vec![&local_line, &ts_line];
+        let tailscale_host: Option<&str> = Some(ts_host);
+        let block: Vec<String> = if let Some(h) = tailscale_host {
+            vec![format!("http://{h}:{port}{path}")]
+        } else {
+            vec![format!("http://127.0.0.1:{port}{path}")]
+        };
 
-        assert_eq!(block.len(), 2, "expected exactly two URL lines");
+        assert_eq!(block.len(), 1, "expected exactly one URL line when tailscale is present");
         assert!(
-            block[0].starts_with("http://127.0.0.1:"),
-            "first line must be local URL, got: {:?}",
+            block[0].starts_with("http://myhost.ts.net:"),
+            "sole line must be tailscale URL, got: {:?}",
             block[0]
         );
         assert!(
-            block[1].starts_with("http://"),
-            "second line must start with 'http://', got: {:?}",
-            block[1]
+            !block[0].starts_with("http://127.0.0.1:"),
+            "must not emit local URL when tailscale is available, got: {:?}",
+            block[0]
         );
-        for line in &block {
-            for forbidden in &["url:", "index:", "mdmd serve", "root:", "entry:"] {
-                assert!(
-                    !line.starts_with(forbidden),
-                    "startup URL block must not contain label {forbidden:?}, line: {line:?}"
-                );
-            }
+        for forbidden in &["url:", "index:", "mdmd serve", "root:", "entry:"] {
+            assert!(
+                !block[0].starts_with(forbidden),
+                "startup URL block must not contain label {forbidden:?}, line: {:?}",
+                block[0]
+            );
         }
     }
 

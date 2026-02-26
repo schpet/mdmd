@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cargo clippy -- -D warnings 2>&1 | grep '^error' | head -20"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cargo clippy -- -D warnings 2>&1 | grep -E '^error|^warning.*unused' | head -20"
+          }
+        ]
+      }
+    ]
+  }
+}

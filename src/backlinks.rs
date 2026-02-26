@@ -221,10 +221,8 @@ fn normalize_abs_path(path: &Path) -> Option<PathBuf> {
             Component::Normal(name) => parts.push(name.to_owned()),
             Component::CurDir => {}
             Component::ParentDir => {
-                if parts.pop().is_none() {
-                    // Would go above root – treat as path-traversal, reject.
-                    return None;
-                }
+                // Would go above root – treat as path-traversal, reject.
+                parts.pop()?;
             }
             Component::Prefix(_) => {
                 // Windows drive prefix; preserve as-is.
@@ -517,7 +515,7 @@ mod tests {
         write_fixture(&tmp, "a.md", "# A Doc\n\nSee [B](b.md).\n");
         write_fixture(&tmp, "b.md", "# B Doc\n\nNo outbound links.\n");
 
-        let idx = build_backlinks_index(tmp.path());
+        let idx = build_backlinks_index(tmp.path(), false);
 
         let refs = idx.get("/b.md").expect("b.md should have a backlink");
         assert_eq!(refs.len(), 1, "b.md should have exactly one backlink");
@@ -534,7 +532,7 @@ mod tests {
         write_fixture(&tmp, "a.md", "See [B](b.md).\n");
         write_fixture(&tmp, "b.md", "# B\n");
 
-        let idx = build_backlinks_index(tmp.path());
+        let idx = build_backlinks_index(tmp.path(), false);
 
         assert!(
             !idx.contains_key("/a.md"),
@@ -548,7 +546,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_fixture(&tmp, "a.md", "# Self\n\nLink to [self](a.md).\n");
 
-        let idx = build_backlinks_index(tmp.path());
+        let idx = build_backlinks_index(tmp.path(), false);
 
         assert!(
             !idx.contains_key("/a.md"),
@@ -563,7 +561,7 @@ mod tests {
         write_fixture(&tmp, "a.md", "No heading here.\n\nSee [B](b.md).\n");
         write_fixture(&tmp, "b.md", "# B\n");
 
-        let idx = build_backlinks_index(tmp.path());
+        let idx = build_backlinks_index(tmp.path(), false);
 
         let refs = idx.get("/b.md").expect("b.md must have a backlink");
         assert_eq!(refs[0].source_display, "a.md", "should fall back to rel path");
@@ -576,7 +574,7 @@ mod tests {
         write_fixture(&tmp, "real.md", "# Real\n");
         write_fixture(&tmp, ".git/secret.md", "# Git internals\n\nSee [real](../real.md).\n");
 
-        let idx = build_backlinks_index(tmp.path());
+        let idx = build_backlinks_index(tmp.path(), false);
 
         // real.md must not receive a backlink from .git/secret.md
         assert!(
@@ -596,7 +594,7 @@ mod tests {
             "# Dep\n\nSee [main](../main.md).\n",
         );
 
-        let idx = build_backlinks_index(tmp.path());
+        let idx = build_backlinks_index(tmp.path(), false);
 
         assert!(
             !idx.contains_key("/main.md"),
@@ -611,7 +609,7 @@ mod tests {
         write_fixture(&tmp, "doc.md", "# Doc\n");
         write_fixture(&tmp, ".jj/internal.md", "# JJ\n\nSee [doc](../doc.md).\n");
 
-        let idx = build_backlinks_index(tmp.path());
+        let idx = build_backlinks_index(tmp.path(), false);
 
         assert!(
             !idx.contains_key("/doc.md"),
@@ -627,7 +625,7 @@ mod tests {
         write_fixture(&tmp, "source.txt", "See [target](target.md).\n");
         write_fixture(&tmp, "source.html", "<a href=\"target.md\">target</a>\n");
 
-        let idx = build_backlinks_index(tmp.path());
+        let idx = build_backlinks_index(tmp.path(), false);
 
         // target.md has no .md/.markdown sources linking to it → no entry
         assert!(
@@ -643,7 +641,7 @@ mod tests {
         write_fixture(&tmp, "source.markdown", "See [target](target.md).\n");
         write_fixture(&tmp, "target.md", "# Target\n");
 
-        let idx = build_backlinks_index(tmp.path());
+        let idx = build_backlinks_index(tmp.path(), false);
 
         assert!(
             idx.contains_key("/target.md"),
@@ -659,7 +657,7 @@ mod tests {
         write_fixture(&tmp, "docs/a.md", "# A\n\nSee [B](b.md).\n");
         write_fixture(&tmp, "docs/b.md", "# B\n");
 
-        let idx = build_backlinks_index(tmp.path());
+        let idx = build_backlinks_index(tmp.path(), false);
 
         let refs = idx
             .get("/docs/b.md")
@@ -675,7 +673,7 @@ mod tests {
         write_fixture(&tmp, "b.md", "# B\n\nAlso [T](target.md).\n");
         write_fixture(&tmp, "target.md", "# Target\n");
 
-        let idx = build_backlinks_index(tmp.path());
+        let idx = build_backlinks_index(tmp.path(), false);
 
         let refs = idx
             .get("/target.md")
@@ -736,7 +734,7 @@ mod tests {
         write_fixture(&tmp, "docs/a.md", "# A Doc\n\nSee [B](../other/b.md).\n");
         write_fixture(&tmp, "other/b.md", "# B Doc\n");
 
-        let idx = build_backlinks_index(tmp.path());
+        let idx = build_backlinks_index(tmp.path(), false);
 
         let refs = idx
             .get("/other/b.md")
@@ -761,7 +759,7 @@ mod tests {
         write_fixture(&tmp, "a.md", "# A Doc\n\nSee [outside](../outside.md).\n");
         // Note: ../outside.md resolves above tmp.path(); no file is created there.
 
-        let idx = build_backlinks_index(tmp.path());
+        let idx = build_backlinks_index(tmp.path(), false);
 
         // The index must be empty: no in-root edges were produced.
         assert!(

@@ -272,7 +272,14 @@ impl Drop for ServerHandle {
 }
 
 fn bin_path() -> String {
-    std::env::var("CARGO_BIN_EXE_mdmd").expect("CARGO_BIN_EXE_mdmd is set by cargo test")
+    // CARGO_BIN_EXE_mdmd is set by cargo when it injects the binary path at
+    // compile time.  Fall back to CARGO_MANIFEST_DIR-relative path for
+    // environments (sandboxes, some CI setups) where the var isn't propagated.
+    std::env::var("CARGO_BIN_EXE_mdmd").unwrap_or_else(|_| {
+        let dir = std::env::var("CARGO_MANIFEST_DIR")
+            .expect("CARGO_MANIFEST_DIR is set by cargo test");
+        format!("{dir}/target/debug/mdmd")
+    })
 }
 
 fn client() -> Client {
@@ -2782,3 +2789,4 @@ fn test_headed_env_no_verbose_suppresses_browser_failure_log() {
         "without --verbose, [browser] diagnostics must be suppressed even on open failure\nstderr:\n{stderr}"
     );
 }
+

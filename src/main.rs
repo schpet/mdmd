@@ -322,7 +322,7 @@ fn main() -> io::Result<()> {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
             rt.block_on(serve::run_serve(file, bind, port, no_open, verbose))
         }
     }
@@ -476,12 +476,12 @@ fn run(
                     }
                     _ => {}
                 }
-            } else if search.as_ref().map_or(false, |s| s.typing) {
+            } else if search.as_ref().is_some_and(|s| s.typing) {
                 // Search typing mode — handle search input
                 let mut cancel = false;
                 match key.code {
                     KeyCode::Enter => {
-                        let empty = search.as_ref().map_or(true, |s| s.matches.is_empty());
+                        let empty = search.as_ref().is_none_or(|s| s.matches.is_empty());
                         if empty {
                             cancel = true;
                         } else if let Some(ref mut s) = search {
@@ -926,6 +926,7 @@ fn open_url_in_browser(url: &str) {
         .spawn();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ui(
     frame: &mut Frame,
     rendered: &RenderedDocument,
