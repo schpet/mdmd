@@ -198,6 +198,8 @@ window.mdmd = window.mdmd || {};
             if (lvl === 0) {
                 /* Non-heading node. */
                 if (currentEntry === null) { continue; } /* depth-0: leave in place */
+                /* Sentinel: backlinks panel must stay anchored to mainEl, never indented. */
+                if (node.classList && node.classList.contains('backlinks-panel')) { continue; }
                 currentEntry.children.push(node);        /* collect into current section */
                 continue;
             }
@@ -397,16 +399,21 @@ window.mdmd = window.mdmd || {};
         var currentOn = document.documentElement.classList.contains(INDENT_CLASS);
 
         if (nextOn) {
-            /* ON path: add class (idempotent), build DOM sections if needed. */
-            document.documentElement.classList.add(INDENT_CLASS);
-            try { localStorage.setItem(INDENT_KEY, INDENT_ON); } catch (_) {}
+            /* ON path: build sections first (while class is absent so sections
+             * start at padding 0), then flush layout so the browser captures
+             * the zero baseline, then add the class to trigger transitions.
+             * Without the flush, newly-inserted elements have no prior computed
+             * value and the padding/margin transitions don't fire. */
             if (mainEl && !mainEl.dataset.indentActive) {
                 buildOutlineSections(mainEl);
+                void mainEl.offsetHeight; /* force style/layout flush */
                 var ns = window.mdmd;
                 if (ns && typeof ns.rebindHeadingObserver === 'function') {
                     ns.rebindHeadingObserver();
                 }
             }
+            document.documentElement.classList.add(INDENT_CLASS);
+            try { localStorage.setItem(INDENT_KEY, INDENT_ON); } catch (_) {}
         } else {
             if (currentOn) {
                 /* Genuine OFF transition: transition-aware unwrap (handles class

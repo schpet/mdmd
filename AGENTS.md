@@ -1,5 +1,56 @@
 
 
+<!-- release-instructions-v1 -->
+
+---
+
+## Making a Release
+
+Releases are managed with `just release` (see `justfile`).
+
+### Prerequisites
+
+- [`changelog`](https://github.com/your-org/changelog-cli) CLI must be installed
+- [`svbump`](https://github.com/your-org/svbump) CLI must be installed
+- Must be on the `main` branch with a clean working copy
+
+### Steps
+
+1. **Add changelog entries** throughout development using the CLI (never edit `CHANGELOG.md` by hand):
+
+   ```bash
+   changelog add --type added "description of new feature"
+   changelog add --type fixed "description of bug fix"
+   changelog add --type changed "description of behavior change"
+   ```
+
+2. **Cut the release** with a single command:
+
+   ```bash
+   just release patch   # 1.0.0 → 1.0.1
+   just release minor   # 1.0.0 → 1.1.0
+   just release major   # 1.0.0 → 2.0.0
+   just release 1.2.3   # explicit version
+   ```
+
+   This command automatically:
+   - Moves `[Unreleased]` entries in `CHANGELOG.md` to the new version
+   - Updates the `package.version` field in `Cargo.toml` via `svbump`
+   - Creates a release commit and sets the `main` bookmark
+   - Tags the commit as `v<version>`
+   - Pushes `main` and the tag to the remote
+
+### Changelog Entry Style
+
+- Use present tense for new behavior: `"X now supports Y"`
+- Use past tense for fixes/removals: `"Fixed X"`, `"X has been removed"`
+- Descriptions should be lowercase (except proper nouns)
+- Types: `added`, `changed`, `deprecated`, `removed`, `fixed`, `security`
+
+<!-- end-release-instructions -->
+
+---
+
 <!-- br-agent-instructions-v1 -->
 
 ---
