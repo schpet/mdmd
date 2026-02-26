@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- serve now shows tailscale IP URL alongside MagicDNS hostname URL when tailscale is available
+
 ## [0.2.3] - 2026-02-26
 
 ### Fixed

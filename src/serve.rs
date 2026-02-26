@@ -40,22 +40,27 @@ macro_rules! vlog {
 // Tailscale detection
 // ---------------------------------------------------------------------------
 
-/// Parse raw bytes from `tailscale status --json` and extract the trimmed
-/// `Self.DNSName`.
+/// Tailscale connection details for the local node.
+#[derive(Debug)]
+pub struct TailscaleInfo {
+    /// MagicDNS hostname (trailing `.` stripped), e.g. `myhost.ts.net`.
+    pub dns_name: String,
+    /// First IPv4 address from `TailscaleIPs`, e.g. `100.x.x.x`.
+    pub ip: String,
+}
+
+/// Parse raw bytes from `tailscale status --json` and extract `Self.DNSName`
+/// and the first IPv4 from `Self.TailscaleIPs`.
 ///
-/// Returns `Err(reason)` (a short lowercase slug) when:
-/// - The bytes are not valid JSON.
-/// - The `Self` key or `DNSName` field is absent.
-/// - `DNSName` is empty after stripping the trailing `.`.
-///
-/// All error paths use `?`/`Result` propagation — zero `unwrap()`/`expect()`.
-pub fn parse_tailscale_dns_name(output: &[u8]) -> Result<String, String> {
+/// Returns `Err(reason)` (a short lowercase slug) on any failure.
+pub fn parse_tailscale_info(output: &[u8]) -> Result<TailscaleInfo, String> {
     let json: serde_json::Value =
         serde_json::from_slice(output).map_err(|e| format!("json-parse: {e}"))?;
 
-    let dns_name = json
-        .get("Self")
-        .and_then(|s| s.get("DNSName"))
+    let self_obj = json.get("Self").ok_or_else(|| "no-Self".to_owned())?;
+
+    let dns_name = self_obj
+        .get("DNSName")
         .and_then(|d| d.as_str())
         .ok_or_else(|| "no-DNSName".to_owned())?;
 
@@ -64,15 +69,34 @@ pub fn parse_tailscale_dns_name(output: &[u8]) -> Result<String, String> {
         return Err("empty-DNSName".to_owned());
     }
 
-    Ok(trimmed.to_owned())
+    let ips = self_obj
+        .get("TailscaleIPs")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "no-TailscaleIPs".to_owned())?;
+
+    let ip = ips
+        .iter()
+        .filter_map(|v| v.as_str())
+        .find(|s| !s.contains(':')) // prefer IPv4
+        .or_else(|| ips.first().and_then(|v| v.as_str()))
+        .ok_or_else(|| "empty-TailscaleIPs".to_owned())?;
+
+    Ok(TailscaleInfo {
+        dns_name: trimmed.to_owned(),
+        ip: ip.to_owned(),
+    })
 }
 
-/// Attempt to obtain the Tailscale hostname by running `tailscale status --json`.
+/// Convenience wrapper: extract only the DNS name (used by existing tests).
+pub fn parse_tailscale_dns_name(output: &[u8]) -> Result<String, String> {
+    parse_tailscale_info(output).map(|info| info.dns_name)
+}
+
+/// Attempt to obtain Tailscale info by running `tailscale status --json`.
 ///
-/// Any subprocess error, JSON parse failure, or missing/empty `DNSName` is
-/// silently treated as "no Tailscale available" and logged at debug level.
-/// This function never panics.
-fn tailscale_dns_name(verbose: bool) -> Option<String> {
+/// Any subprocess error, JSON parse failure, or missing fields are silently
+/// treated as "no Tailscale available". This function never panics.
+fn tailscale_info(verbose: bool) -> Option<TailscaleInfo> {
     let output = match std::process::Command::new("tailscale")
         .args(["status", "--json"])
         .output()
@@ -84,8 +108,8 @@ fn tailscale_dns_name(verbose: bool) -> Option<String> {
         }
     };
 
-    match parse_tailscale_dns_name(&output.stdout) {
-        Ok(name) => Some(name),
+    match parse_tailscale_info(&output.stdout) {
+        Ok(info) => Some(info),
         Err(reason) => {
             vlog!(verbose, "[tailscale] skipped reason={reason}");
             None
@@ -1649,15 +1673,18 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open
     );
 
     // Startup stdout: bare URL(s) only — no labels.
-    // Tailscale URL first (when available), then localhost.
-    let tailscale_host = tokio::task::spawn_blocking(move || tailscale_dns_name(verbose))
+    // When Tailscale is available: MagicDNS hostname then IP address.
+    // When Tailscale is absent: localhost fallback.
+    let tailscale = tokio::task::spawn_blocking(move || tailscale_info(verbose))
         .await
         .ok()
         .flatten();
-    if let Some(ref host) = tailscale_host {
-        println!("http://{host}:{bound_port}{}", state.entry_url_path);
+    if let Some(ref ts) = tailscale {
+        println!("http://{}:{bound_port}{}", ts.dns_name, state.entry_url_path);
+        println!("http://{}:{bound_port}{}", ts.ip, state.entry_url_path);
+    } else {
+        println!("http://127.0.0.1:{bound_port}{}", state.entry_url_path);
     }
-    println!("http://127.0.0.1:{bound_port}{}", state.entry_url_path);
 
     // Attempt to open the entry URL in the default browser (fire-and-forget).
     // Must run after all stdout URL lines are printed so the URL is visible
@@ -1794,11 +1821,33 @@ mod tests {
         assert!(derive_entry_url_path(&entry, &root).is_err());
     }
 
-    // --- parse_tailscale_dns_name ---
+    // --- parse_tailscale_info / parse_tailscale_dns_name ---
+
+    #[test]
+    fn tailscale_info_parses_dns_and_ipv4() {
+        let json = br#"{"Self":{"DNSName":"myhost.ts.net.","TailscaleIPs":["100.1.2.3","fd7a::1"]}}"#;
+        let info = parse_tailscale_info(json).unwrap();
+        assert_eq!(info.dns_name, "myhost.ts.net");
+        assert_eq!(info.ip, "100.1.2.3");
+    }
+
+    #[test]
+    fn tailscale_info_falls_back_to_ipv6_when_no_ipv4() {
+        let json = br#"{"Self":{"DNSName":"myhost.ts.net.","TailscaleIPs":["fd7a::1"]}}"#;
+        let info = parse_tailscale_info(json).unwrap();
+        assert_eq!(info.ip, "fd7a::1");
+    }
+
+    #[test]
+    fn tailscale_info_missing_tailscale_ips_returns_err() {
+        let json = br#"{"Self":{"DNSName":"myhost.ts.net."}}"#;
+        let err = parse_tailscale_info(json).unwrap_err();
+        assert!(err.contains("no-TailscaleIPs"), "got: {err}");
+    }
 
     #[test]
     fn tailscale_valid_json_trims_trailing_dot() {
-        let json = br#"{"Self":{"DNSName":"hostname.ts.net."}}"#;
+        let json = br#"{"Self":{"DNSName":"hostname.ts.net.","TailscaleIPs":["100.1.2.3"]}}"#;
         let result = parse_tailscale_dns_name(json).unwrap();
         assert_eq!(result, "hostname.ts.net");
     }
@@ -1820,7 +1869,7 @@ mod tests {
     fn tailscale_missing_self_key_returns_err() {
         let json = br#"{"Other":{"DNSName":"hostname.ts.net."}}"#;
         let err = parse_tailscale_dns_name(json).unwrap_err();
-        assert!(err.contains("no-DNSName"), "got: {err}");
+        assert!(err.contains("no-Self"), "got: {err}");
     }
 
     #[test]
@@ -1865,10 +1914,10 @@ mod tests {
     /// diagnostic output.  Either outcome is acceptable.
     #[test]
     fn tailscale_dns_name_verbose_false_does_not_panic() {
-        let _ = tailscale_dns_name(false);
+        let _ = tailscale_info(false);
     }
 
-    /// `tailscale_dns_name(true)` must complete without panicking on either
+    /// `tailscale_info(true)` must complete without panicking on either
     /// the subprocess-error branch or the success path.
     ///
     /// When the `tailscale` binary is absent the subprocess-error branch emits
@@ -1876,7 +1925,7 @@ mod tests {
     /// returns `None`.  Either outcome is acceptable; only no-panic is asserted.
     #[test]
     fn tailscale_dns_name_verbose_true_does_not_panic() {
-        let _ = tailscale_dns_name(true);
+        let _ = tailscale_info(true);
     }
 
     // --- startup URL output contract ---
@@ -1913,34 +1962,36 @@ mod tests {
         assert_eq!(line, "http://127.0.0.1:4321/README.md");
     }
 
-    /// When tailscale is present the startup URL block emits exactly one bare URL
     /// When tailscale is present the startup URL block emits exactly two bare URL
-    /// lines: tailscale first, localhost second — no labels.
+    /// lines: MagicDNS hostname first, then the Tailscale IP — no 127.0.0.1, no labels.
     #[test]
-    fn startup_url_block_tailscale_first_local_second_when_tailscale_present() {
+    fn startup_url_block_tailscale_dns_then_ip_when_tailscale_present() {
         let port: u16 = 8080;
         let path = "/guide.md";
-        let ts_host = "myhost.ts.net";
+        let ts_dns = "myhost.ts.net";
+        let ts_ip = "100.1.2.3";
 
-        let tailscale_host: Option<&str> = Some(ts_host);
-        let mut block: Vec<String> = vec![];
-        if let Some(h) = tailscale_host {
-            block.push(format!("http://{h}:{port}{path}"));
-        }
-        block.push(format!("http://127.0.0.1:{port}{path}"));
+        let block: Vec<String> = vec![
+            format!("http://{ts_dns}:{port}{path}"),
+            format!("http://{ts_ip}:{port}{path}"),
+        ];
 
         assert_eq!(block.len(), 2, "expected exactly two URL lines when tailscale is present");
         assert!(
             block[0].starts_with("http://myhost.ts.net:"),
-            "first line must be tailscale URL, got: {:?}",
+            "first line must be tailscale MagicDNS URL, got: {:?}",
             block[0]
         );
         assert!(
-            block[1].starts_with("http://127.0.0.1:"),
-            "second line must be local URL, got: {:?}",
+            block[1].starts_with("http://100."),
+            "second line must be tailscale IP URL, got: {:?}",
             block[1]
         );
         for line in &block {
+            assert!(
+                !line.starts_with("http://127.0.0.1:"),
+                "must not emit localhost when tailscale is present, line: {line:?}"
+            );
             for forbidden in &["url:", "index:", "mdmd serve", "root:", "entry:"] {
                 assert!(
                     !line.starts_with(forbidden),
