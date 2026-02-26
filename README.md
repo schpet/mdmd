@@ -1,6 +1,6 @@
 # mdmd
 
-here in the year 2026, markdown is the dominant pl. and here i am shedding a tear for every slop h4 i pipe into less. this fixes that.
+makes markdown easy to look at by spinning up a local webserver. very tailscale friendly for vms. also has a pager, but `mdmd serve <path-to-md>` is where it's at: prints out a localhost url to look at the markdown like a human. 
 
 ---
 
