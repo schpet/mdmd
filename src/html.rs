@@ -353,6 +353,7 @@ pub fn render_markdown(
     input: &str,
     file_path: &Path,
     serve_root: &Path,
+    verbose: bool,
 ) -> (String, Vec<HeadingEntry>) {
     let arena = Arena::new();
     let options = make_options();
@@ -360,20 +361,24 @@ pub fn render_markdown(
 
     // --- Mermaid fenced blocks: SSR placeholders for client hydration (bd-2se) ---
     let mermaid_rewritten = rewrite_mermaid_code_blocks(root);
-    eprintln!(
-        "[mermaid] file={} rewritten={}",
-        file_path.display(),
-        mermaid_rewritten
-    );
+    if verbose {
+        eprintln!(
+            "[mermaid] file={} rewritten={}",
+            file_path.display(),
+            mermaid_rewritten
+        );
+    }
 
     // --- Rewrite local relative links to root-relative hrefs (bd-1p6) ---
     let (rewritten, skipped) = rewrite_local_links(root, file_path, serve_root);
-    eprintln!(
-        "[rewrite] file={} rewritten={} skipped={}",
-        file_path.display(),
-        rewritten,
-        skipped
-    );
+    if verbose {
+        eprintln!(
+            "[rewrite] file={} rewritten={} skipped={}",
+            file_path.display(),
+            rewritten,
+            skipped
+        );
+    }
 
     // --- Extract headings with per-document slug deduplication (R4) ---
     let mut entries: Vec<HeadingEntry> = Vec::new();
@@ -413,11 +418,13 @@ pub fn render_markdown(
     format_html(root, &options, &mut html_bytes).expect("comrak HTML formatting should not fail");
     let html = String::from_utf8(html_bytes).expect("comrak output must be valid UTF-8");
 
-    eprintln!(
-        "[render] path={} headings={}",
-        file_path.display(),
-        entries.len()
-    );
+    if verbose {
+        eprintln!(
+            "[render] path={} headings={}",
+            file_path.display(),
+            entries.len()
+        );
+    }
 
     (html, entries)
 }
@@ -586,7 +593,7 @@ mod tests {
 
     /// Convenience wrapper: render with dummy paths.
     fn render(input: &str) -> (String, Vec<HeadingEntry>) {
-        render_markdown(input, Path::new("test.md"), Path::new("."))
+        render_markdown(input, Path::new("test.md"), Path::new("."), false)
     }
 
     // --- Phase-1 markdown feature matrix ---
@@ -910,7 +917,7 @@ mod tests {
     fn render_abs(input: &str, serve_root: &str, file_rel: &str) -> String {
         let root = Path::new(serve_root);
         let file = root.join(file_rel);
-        let (html, _) = render_markdown(input, &file, root);
+        let (html, _) = render_markdown(input, &file, root, false);
         html
     }
 

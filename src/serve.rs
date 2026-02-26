@@ -1286,7 +1286,7 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
 
         // Default: render as a full HTML page with TOC shell.
         let (html_body, headings) =
-            html::render_markdown(&content, &canonical, &state.canonical_root);
+            html::render_markdown(&content, &canonical, &state.canonical_root, state.verbose);
         let key = crate::backlinks::url_key_from_rel_path(&norm_display);
         let backlinks_slice = state.backlinks.get(&key).map(Vec::as_slice).unwrap_or(&[]);
         vlog!(state.verbose, "[backlinks] key={key} found={}", backlinks_slice.len());
@@ -1592,7 +1592,7 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open
     // Build the startup backlinks index synchronously before server bind.
     // The index is eventually-stale by design; users must restart the server
     // after editing files to pick up changes.
-    let backlinks = crate::backlinks::build_backlinks_index(&canonical_root);
+    let backlinks = crate::backlinks::build_backlinks_index(&canonical_root, verbose);
 
     // Precompute ETags for embedded static assets (stable for the lifetime of
     // this server process — embedded bytes never change at runtime).
@@ -2583,7 +2583,7 @@ mod tests {
         std::fs::create_dir_all(&docs).unwrap();
         std::fs::write(docs.join("a.md"), "# A Doc\n\nSee [self](a.md).\n").unwrap();
 
-        let idx = crate::backlinks::build_backlinks_index(tmp.path());
+        let idx = crate::backlinks::build_backlinks_index(tmp.path(), false);
         let is_empty = idx
             .get("/docs/a.md")
             .map(|v| v.is_empty())
@@ -2605,7 +2605,7 @@ mod tests {
         std::fs::write(docs.join("a.md"), "# A Doc\n\nSee [B](b.md).\n").unwrap();
         std::fs::write(docs.join("b.md"), "# B Doc\n").unwrap();
 
-        let idx = crate::backlinks::build_backlinks_index(tmp.path());
+        let idx = crate::backlinks::build_backlinks_index(tmp.path(), false);
         let refs = idx
             .get("/docs/b.md")
             .expect("/docs/b.md must have a backlink from /docs/a.md");

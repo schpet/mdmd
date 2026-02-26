@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- [backlinks], [mermaid], [rewrite], and [render] log lines are now silent by default and only emitted when --verbose is passed
+
 ## [0.2.0] - 2026-02-26
 
 ### Fixed
