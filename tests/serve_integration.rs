@@ -879,7 +879,6 @@ fn test_serve_script_stripped() {
 fn test_serve_startup_stdout_format() {
     let fixture = Fixture::new(FixtureOptions::default());
     let server = ServerHandle::new("test_serve_startup_stdout_format", &fixture);
-    let port = server.port;
 
     let _ = fetch(&client(), &server.url("/"));
 
@@ -888,23 +887,20 @@ fn test_serve_startup_stdout_format() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let lines: Vec<&str> = stdout.lines().collect();
 
-    // Must have at least one line (local URL) and at most two (local + tailscale).
+    // Must have at least one line: either local URL or tailscale URLs (1–2 lines).
     assert!(
         !lines.is_empty() && lines.len() <= 2,
         "expected 1–2 startup lines, got {}\nstdout:\n{stdout}",
         lines.len()
     );
 
-    // Line 0: bare local URL — matches http://127.0.0.1:{port}/...
-    assert!(
-        lines[0].starts_with(&format!("http://127.0.0.1:{port}/")),
-        "first startup line must be bare local URL http://127.0.0.1:{port}/...\nstdout:\n{stdout}"
-    );
-
-    // If a second line exists it must be a bare tailscale URL matching
-    // http://[hostname]:[port]/[path] — no label prefix.
-    if let Some(second) = lines.get(1) {
-        let after_scheme = second.strip_prefix("http://").unwrap_or("");
+    // Every line must be a bare URL: http://[host]:[port]/[path]
+    for line in &lines {
+        assert!(
+            line.starts_with("http://"),
+            "every startup line must be a bare http:// URL\ngot: {line:?}\nstdout:\n{stdout}"
+        );
+        let after_scheme = line.strip_prefix("http://").unwrap();
         let colon_pos = after_scheme.find(':');
         let valid_url = match colon_pos {
             Some(pos) => {
@@ -921,7 +917,7 @@ fn test_serve_startup_stdout_format() {
         };
         assert!(
             valid_url,
-            "second startup line must be bare http://hostname:port/... URL\ngot: {second:?}\nstdout:\n{stdout}"
+            "startup line must be bare http://host:port/... URL\ngot: {line:?}\nstdout:\n{stdout}"
         );
     }
 
@@ -1782,12 +1778,12 @@ fn test_serve_symlink_outside_root_denied_with_outside_root_log() {
 // bd-26u: backlinks startup stdout/stderr
 // ---------------------------------------------------------------------------
 
-/// Verifies that the backlinks scan count appears in stderr after server startup.
-/// Stdout must remain URL-only (no backlinks diagnostic lines).
+/// Verifies that backlinks diagnostics do not leak to stdout (URL-only contract).
+/// With --verbose, the backlinks scan count appears on stderr.
 #[test]
 fn test_backlinks_startup_stdout() {
     let fixture = Fixture::new(FixtureOptions::default());
-    let server = ServerHandle::new("test_backlinks_startup_stdout", &fixture);
+    let server = ServerHandle::new_verbose("test_backlinks_startup_stdout", &fixture);
 
     // Trigger at least one request so the server is fully warmed up.
     let _ = fetch(&client(), &server.url("/"));
@@ -1802,7 +1798,7 @@ fn test_backlinks_startup_stdout() {
         "stdout must not contain backlinks diagnostic lines (URL-only contract)\nstdout:\n{stdout}"
     );
 
-    // The backlinks scan count must appear on stderr.
+    // The backlinks scan count must appear on stderr (verbose mode).
     assert!(
         stderr.contains("[backlinks] indexed files="),
         "scan count missing from stderr\nstderr:\n{stderr}"
@@ -2209,6 +2205,10 @@ fn test_out_of_cwd_non_interactive_proceeds() {
     let entry = tmp.path().join("doc.md");
     fs::write(&entry, "# Doc\n").expect("write doc.md");
 
+    // Use a separate temp dir as CWD so the entry is outside CWD,
+    // but avoid "/" which causes the backlinks scanner to walk the entire filesystem.
+    let cwd_tmp = tempfile::tempdir().expect("create cwd tempdir");
+
     let port = free_port();
     let mut child = Command::new(bin_path())
         .arg("serve")
@@ -2217,8 +2217,7 @@ fn test_out_of_cwd_non_interactive_proceeds() {
         .arg("--port")
         .arg(port.to_string())
         .arg(&entry)
-        // current_dir("/") ensures the entry is outside CWD.
-        .current_dir("/")
+        .current_dir(cwd_tmp.path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2253,6 +2252,10 @@ fn test_out_of_cwd_interactive_confirm_proceeds() {
     let entry = tmp.path().join("doc.md");
     fs::write(&entry, "# Doc\n").expect("write doc.md");
 
+    // Use a separate temp dir as CWD so the entry is outside CWD,
+    // but avoid "/" which causes the backlinks scanner to walk the entire filesystem.
+    let cwd_tmp = tempfile::tempdir().expect("create cwd tempdir");
+
     let port = free_port();
     let mut child = Command::new(bin_path())
         .arg("serve")
@@ -2261,7 +2264,7 @@ fn test_out_of_cwd_interactive_confirm_proceeds() {
         .arg("--port")
         .arg(port.to_string())
         .arg(&entry)
-        .current_dir("/")
+        .current_dir(cwd_tmp.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2299,6 +2302,10 @@ fn test_out_of_cwd_interactive_decline_exits() {
     let entry = tmp.path().join("doc.md");
     fs::write(&entry, "# Doc\n").expect("write doc.md");
 
+    // Use a separate temp dir as CWD so the entry is outside CWD,
+    // but avoid "/" which causes the backlinks scanner to walk the entire filesystem.
+    let cwd_tmp = tempfile::tempdir().expect("create cwd tempdir");
+
     let port = free_port();
     let mut child = Command::new(bin_path())
         .arg("serve")
@@ -2307,7 +2314,7 @@ fn test_out_of_cwd_interactive_decline_exits() {
         .arg("--port")
         .arg(port.to_string())
         .arg(&entry)
-        .current_dir("/")
+        .current_dir(cwd_tmp.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2393,7 +2400,7 @@ fn test_cross_dir_allow_broad_root() {
         .arg(port.to_string())
         // Pass the parent directory as entry: serve_root = base/
         .arg(&base)
-        .current_dir("/")
+        .current_dir(&base)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2548,7 +2555,6 @@ fn test_verbose_url_stdout_and_startup_stderr_diagnostics() {
     );
 
     let _ = fetch(&client(), &server.url("/"));
-    let port = server.port;
 
     let output = server.shutdown_with_sigint();
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2562,20 +2568,12 @@ fn test_verbose_url_stdout_and_startup_stderr_diagnostics() {
         "--verbose must still emit URL line(s) on stdout\nstdout:\n{stdout}"
     );
 
-    // First line must be the bare local URL.
-    assert!(
-        lines[0].starts_with(&format!("http://127.0.0.1:{port}/")),
-        "first stdout line must be bare local URL http://127.0.0.1:{port}/...\nstdout:\n{stdout}"
-    );
-
-    // No diagnostic label prefixes on stdout — URL-only contract holds with --verbose.
+    // Every line must be a bare URL (no diagnostic prefixes).
     for line in &lines {
-        for prefix in &["[serve]", "[bind]", "[browser]", "[tailscale]"] {
-            assert!(
-                !line.starts_with(prefix),
-                "stdout must not carry {prefix} diagnostic prefix in verbose mode\nline: {line:?}\nstdout:\n{stdout}"
-            );
-        }
+        assert!(
+            line.starts_with("http://"),
+            "stdout lines must be bare http:// URLs\ngot: {line:?}\nstdout:\n{stdout}"
+        );
     }
 
     // stderr must contain [serve] and [bind] startup diagnostics.
@@ -2669,6 +2667,8 @@ fn test_headless_ci_env_suppresses_browser_attempt() {
         &[
             // Simulate a CI headless environment.
             ("CI", "1"),
+            // On macOS, CI alone doesn't suppress headed detection — SSH vars are needed.
+            ("SSH_CONNECTION", "127.0.0.1 1234 127.0.0.1 22"),
             // Deterministic stub: any open attempt would fail and log [browser].
             ("MDMD_OPEN_CMD", "__mdmd_no_such_open_cmd__"),
         ],

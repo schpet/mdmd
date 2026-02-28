@@ -88,6 +88,7 @@ pub fn parse_tailscale_info(output: &[u8]) -> Result<TailscaleInfo, String> {
 }
 
 /// Convenience wrapper: extract only the DNS name (used by existing tests).
+#[cfg(test)]
 pub fn parse_tailscale_dns_name(output: &[u8]) -> Result<String, String> {
     parse_tailscale_info(output).map(|info| info.dns_name)
 }
@@ -126,6 +127,7 @@ fn tailscale_info(verbose: bool) -> Option<TailscaleInfo> {
 pub enum RuntimePlatform {
     #[allow(dead_code)]
     MacOs,
+    #[allow(dead_code)]
     Linux,
     #[allow(dead_code)]
     Other,
@@ -2854,7 +2856,8 @@ mod tests {
         // We can't control the actual environment here, but we can verify the
         // function returns without panicking and produces a valid bool.
         let result = is_headed_environment();
-        assert!(result == true || result == false);
+        // Verify the function returns without panicking; the value depends on the environment.
+        let _ = result;
     }
 
     // --- should_attempt_open ---
