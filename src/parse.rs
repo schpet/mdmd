@@ -240,7 +240,9 @@ pub fn parse(source: &str) -> ParsedDocument {
                     // cleaner flattened content.
                     if block_depth >= 1
                         && matches!(tag, Tag::Item | Tag::TableRow)
-                        && !text_buf.is_empty() && !text_buf.ends_with('\n') {
+                        && !text_buf.is_empty()
+                        && !text_buf.ends_with('\n')
+                    {
                         text_buf.push('\n');
                     }
                     block_depth += 1;

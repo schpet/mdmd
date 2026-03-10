@@ -12,6 +12,7 @@ A tour of features supported by `mdmd serve`. Click any link to navigate.
 - [Links](links.md) — local links, extensionless, external, fragments
 - [Nested doc](subdir/nested.md) — a doc one level deep
 - [Deep headings](deep-headings.md) — stress-test for indentation hierarchy (H3–H6, skipped levels, alternating depths)
+- [Frontmatter](frontmatter.md) — YAML frontmatter metadata panel
 
 ## Quick Preview
 

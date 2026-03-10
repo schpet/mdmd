@@ -1,4 +1,5 @@
 mod backlinks;
+mod frontmatter;
 mod html;
 mod parse;
 mod render;
@@ -289,7 +290,19 @@ fn resolve_dispatch_mode() -> DispatchMode {
     match Cli::try_parse() {
         Ok(cli) => match cli.command {
             Commands::View { file } => DispatchMode::View { file },
-            Commands::Serve { file, bind, port, no_open, verbose } => DispatchMode::Serve { file, bind, port, no_open, verbose },
+            Commands::Serve {
+                file,
+                bind,
+                port,
+                no_open,
+                verbose,
+            } => DispatchMode::Serve {
+                file,
+                bind,
+                port,
+                no_open,
+                verbose,
+            },
         },
         Err(clap_err) => {
             // Pass --help, --version, and subcommand-level help through to the full Cli handler.
@@ -311,14 +324,18 @@ fn resolve_dispatch_mode() -> DispatchMode {
 
 fn main() -> io::Result<()> {
     match resolve_dispatch_mode() {
-        DispatchMode::Legacy { file } => {
-            run_tui_file(&file)
-        }
+        DispatchMode::Legacy { file } => run_tui_file(&file),
         DispatchMode::View { file } => {
             eprintln!("[view] TUI viewer dispatched for: {file}");
             run_tui_file(&file)
         }
-        DispatchMode::Serve { file, bind, port, no_open, verbose } => {
+        DispatchMode::Serve {
+            file,
+            bind,
+            port,
+            no_open,
+            verbose,
+        } => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()

@@ -77,8 +77,7 @@ impl Fixture {
         }
 
         if opts.include_dotfiles {
-            fs::write(root.join(".hidden-dotfile"), "hidden content\n")
-                .expect("write dotfile");
+            fs::write(root.join(".hidden-dotfile"), "hidden content\n").expect("write dotfile");
         }
 
         if opts.include_nested_dirs {
@@ -87,6 +86,90 @@ impl Fixture {
             fs::write(nested.join("nested-doc.md"), "# Nested Doc\n")
                 .expect("write nested/nested-doc.md");
         }
+
+        Self {
+            _tmp: tmp,
+            root,
+            entry: readme,
+        }
+    }
+
+    fn frontmatter() -> Self {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let root = tmp.path().to_path_buf();
+        let readme = root.join("README.md");
+
+        fs::write(
+            &readme,
+            concat!(
+                "---\n",
+                "title: Browser Title\n",
+                "summary: summary text\n",
+                "tags:\n",
+                "  - alpha\n",
+                "  - beta\n",
+                "empty: null\n",
+                "details:\n",
+                "  owner: team docs\n",
+                "  links:\n",
+                "    - href: /docs/ref\n",
+                "    - fallback\n",
+                "\"<script>alert(1)</script>\": \"\\\"quoted\\\" & <tag>\"\n",
+                "---\n",
+                "# Article Heading\n\n",
+                "Body paragraph.\n"
+            ),
+        )
+        .expect("write README");
+
+        fs::write(
+            root.join("referrer.md"),
+            "# Referrer\n\n[Article](README.md)\n",
+        )
+        .expect("write referrer");
+
+        fs::write(
+            root.join("empty.md"),
+            "---\n---\n# Empty Heading\n\nBody after empty frontmatter.\n",
+        )
+        .expect("write empty");
+
+        fs::write(
+            root.join("malformed.md"),
+            concat!(
+                "---\n",
+                "title: [oops\n",
+                "---\n",
+                "# Malformed Heading\n\n",
+                "Malformed body.\n"
+            ),
+        )
+        .expect("write malformed");
+
+        fs::write(
+            root.join("unterminated.md"),
+            concat!(
+                "---\n",
+                "title: Broken\n",
+                "owner: team docs\n",
+                "# Unterminated Heading\n\n",
+                "Unterminated body.\n"
+            ),
+        )
+        .expect("write unterminated");
+
+        fs::write(
+            root.join("non-mapping.md"),
+            concat!(
+                "---\n",
+                "[alpha, beta]\n",
+                "---\n",
+                "# Non Mapping Heading\n"
+            ),
+        )
+        .expect("write non-mapping");
+
+        fs::write(root.join("plain.md"), "# Plain Heading\n\nPlain body.\n").expect("write plain");
 
         Self {
             _tmp: tmp,
@@ -276,8 +359,8 @@ fn bin_path() -> String {
     // compile time.  Fall back to CARGO_MANIFEST_DIR-relative path for
     // environments (sandboxes, some CI setups) where the var isn't propagated.
     std::env::var("CARGO_BIN_EXE_mdmd").unwrap_or_else(|_| {
-        let dir = std::env::var("CARGO_MANIFEST_DIR")
-            .expect("CARGO_MANIFEST_DIR is set by cargo test");
+        let dir =
+            std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo test");
         format!("{dir}/target/debug/mdmd")
     })
 }
@@ -418,6 +501,33 @@ fn assert_header_eq(resp: &ResponseSnapshot, name: &str, expected: &str) {
         name,
         resp.context()
     );
+}
+
+fn assert_body_contains(resp: &ResponseSnapshot, needle: &str, label: &str) {
+    assert!(
+        resp.body_text().contains(needle),
+        "{label}\n{}",
+        resp.context()
+    );
+}
+
+fn assert_body_not_contains(resp: &ResponseSnapshot, needle: &str, label: &str) {
+    assert!(
+        !resp.body_text().contains(needle),
+        "{label}\n{}",
+        resp.context()
+    );
+}
+
+fn assert_body_order(resp: &ResponseSnapshot, earlier: &str, later: &str, label: &str) {
+    let body = resp.body_text();
+    let earlier_pos = body
+        .find(earlier)
+        .unwrap_or_else(|| panic!("missing earlier marker '{earlier}'\n{}", resp.context()));
+    let later_pos = body
+        .find(later)
+        .unwrap_or_else(|| panic!("missing later marker '{later}'\n{}", resp.context()));
+    assert!(earlier_pos < later_pos, "{label}\n{}", resp.context());
 }
 
 fn wait_with_timeout(child: &mut Child, timeout: Duration) {
@@ -907,9 +1017,7 @@ fn test_serve_startup_stdout_format() {
                 let after_colon = &after_scheme[pos + 1..];
                 let slash_pos = after_colon.find('/');
                 match slash_pos {
-                    Some(sp) => {
-                        sp > 0 && after_colon[..sp].chars().all(|c| c.is_ascii_digit())
-                    }
+                    Some(sp) => sp > 0 && after_colon[..sp].chars().all(|c| c.is_ascii_digit()),
                     None => false,
                 }
             }
@@ -922,7 +1030,14 @@ fn test_serve_startup_stdout_format() {
     }
 
     // No line may carry any of the old label prefixes.
-    let forbidden = ["mdmd serve", "root:", "entry:", "url:", "index:", "backlinks:"];
+    let forbidden = [
+        "mdmd serve",
+        "root:",
+        "entry:",
+        "url:",
+        "index:",
+        "backlinks:",
+    ];
     for line in &lines {
         for prefix in forbidden {
             assert!(
@@ -960,6 +1075,241 @@ fn test_serve_assets_js() {
     let resp = fetch(&client(), &server.url("/assets/mdmd.js"));
     assert_status(&resp, 200);
     assert_header_contains(&resp, "content-type", "text/javascript");
+}
+
+#[test]
+fn test_serve_frontmatter_rendering_and_ordering() {
+    eprintln!("scenario: serve frontmatter rendering and ordering");
+    let fixture = Fixture::frontmatter();
+    let server = ServerHandle::new("test_serve_frontmatter_rendering_and_ordering", &fixture);
+
+    let resp = fetch(&client(), &server.url("/README.md"));
+    assert_status(&resp, 200);
+    assert_header_contains(&resp, "content-type", "text/html");
+
+    eprintln!("assertion: frontmatter panel and title override are present");
+    assert_body_contains(
+        &resp,
+        "<details class=\"frontmatter-panel\" aria-label=\"Document metadata\">",
+        "frontmatter panel missing",
+    );
+    assert_body_contains(
+        &resp,
+        "<title>Browser Title · mdmd serve</title>",
+        "frontmatter title did not override browser title",
+    );
+    assert_body_contains(
+        &resp,
+        "<h1 id=\"article-heading\">Article Heading</h1>",
+        "markdown heading must remain visible in article body",
+    );
+
+    eprintln!("assertion: raw yaml is stripped while structured values stay visible");
+    assert_body_not_contains(
+        &resp,
+        "title: Browser Title",
+        "raw title yaml leaked into HTML mode",
+    );
+    assert_body_not_contains(
+        &resp,
+        "summary: summary text",
+        "raw summary yaml leaked into HTML mode",
+    );
+    assert_body_contains(
+        &resp,
+        "<span class=\"meta-tag\">alpha</span>",
+        "sequence values must render as pills",
+    );
+    assert_body_contains(
+        &resp,
+        "<span class=\"meta-tag\">beta</span>",
+        "all scalar sequence values must render as pills",
+    );
+    assert_body_contains(
+        &resp,
+        "<span class=\"val-null\">null</span>",
+        "null values must render with null styling",
+    );
+    assert_body_contains(&resp, "<dt>owner</dt>", "nested mapping field missing");
+    assert_body_contains(&resp, "team docs", "nested mapping value missing");
+
+    eprintln!("assertion: hostile keys and values are escaped");
+    assert_body_contains(
+        &resp,
+        "&lt;script&gt;alert(1)&lt;/script&gt;",
+        "hostile frontmatter key must be escaped",
+    );
+    assert_body_contains(
+        &resp,
+        "&quot;quoted&quot; &amp; &lt;tag&gt;",
+        "hostile frontmatter value must be escaped",
+    );
+
+    eprintln!("assertion: panel precedes article body and backlinks stay last");
+    assert_body_contains(
+        &resp,
+        "<section class=\"backlinks-panel\" aria-label=\"Backlinks\">",
+        "backlinks panel missing",
+    );
+    assert_body_order(
+        &resp,
+        "<details class=\"frontmatter-panel\"",
+        "<h1 id=\"article-heading\">",
+        "frontmatter panel must appear before the article heading",
+    );
+    assert_body_order(
+        &resp,
+        "<h1 id=\"article-heading\">",
+        "<section class=\"backlinks-panel\"",
+        "backlinks panel must appear after the article body",
+    );
+}
+
+#[test]
+fn test_serve_frontmatter_fallbacks_and_plain_markdown() {
+    eprintln!("scenario: serve frontmatter fallbacks");
+    let fixture = Fixture::frontmatter();
+    let server = ServerHandle::new(
+        "test_serve_frontmatter_fallbacks_and_plain_markdown",
+        &fixture,
+    );
+
+    let cases = [
+        (
+            "empty frontmatter",
+            "/empty.md",
+            "<h1 id=\"empty-heading\">Empty Heading</h1>",
+            None,
+            None,
+            true,
+        ),
+        (
+            "malformed yaml",
+            "/malformed.md",
+            "title: [oops",
+            Some("---"),
+            Some("Malformed Heading"),
+            false,
+        ),
+        (
+            "unterminated block",
+            "/unterminated.md",
+            "title: Broken",
+            Some("---"),
+            Some("Unterminated Heading"),
+            false,
+        ),
+        (
+            "non-mapping root",
+            "/non-mapping.md",
+            "[alpha, beta]",
+            Some("---"),
+            Some("Non Mapping Heading"),
+            false,
+        ),
+        (
+            "plain markdown",
+            "/plain.md",
+            "<h1 id=\"plain-heading\">Plain Heading</h1>",
+            None,
+            None,
+            false,
+        ),
+    ];
+
+    for (
+        label,
+        path,
+        expected_visible,
+        maybe_delimiter_visible,
+        maybe_extra_visible,
+        expect_empty_strip,
+    ) in cases
+    {
+        eprintln!("assertion: checking {label}");
+        let resp = fetch(&client(), &server.url(path));
+        assert_status(&resp, 200);
+        assert_header_contains(&resp, "content-type", "text/html");
+        assert_body_not_contains(
+            &resp,
+            "frontmatter-panel",
+            &format!("{label} must not render a frontmatter panel"),
+        );
+        assert_body_contains(
+            &resp,
+            expected_visible,
+            &format!("{label} content visibility check failed"),
+        );
+        if let Some(delimiter_visible) = maybe_delimiter_visible {
+            assert_body_contains(
+                &resp,
+                delimiter_visible,
+                &format!("{label} delimiter visibility check failed"),
+            );
+        }
+        if let Some(extra_visible) = maybe_extra_visible {
+            assert_body_contains(
+                &resp,
+                extra_visible,
+                &format!("{label} fallback body visibility check failed"),
+            );
+        }
+        if expect_empty_strip {
+            assert_body_not_contains(
+                &resp,
+                "---",
+                "empty frontmatter delimiters should be stripped from HTML mode",
+            );
+        }
+    }
+}
+
+#[test]
+fn test_serve_frontmatter_raw_mode_and_stylesheet_hooks() {
+    eprintln!("scenario: serve frontmatter raw mode and css hooks");
+    let fixture = Fixture::frontmatter();
+    let server = ServerHandle::new(
+        "test_serve_frontmatter_raw_mode_and_stylesheet_hooks",
+        &fixture,
+    );
+
+    eprintln!("assertion: raw mode preserves original file bytes");
+    let raw = fetch(&client(), &server.url("/README.md?raw=1"));
+    assert_status(&raw, 200);
+    assert_header_contains(&raw, "content-type", "text/plain");
+    let expected = fs::read(&fixture.entry).expect("read README fixture bytes");
+    assert_eq!(
+        raw.body,
+        expected,
+        "raw mode must preserve original file contents verbatim\n{}",
+        raw.context()
+    );
+    assert_body_not_contains(
+        &raw,
+        "<!DOCTYPE html>",
+        "raw mode must not return the HTML shell",
+    );
+
+    eprintln!("assertion: stylesheet exposes frontmatter selectors");
+    let css = fetch(&client(), &server.url("/assets/mdmd.css"));
+    assert_status(&css, 200);
+    assert_header_contains(&css, "content-type", "text/css");
+    assert_body_contains(
+        &css,
+        ".frontmatter-panel {",
+        "frontmatter panel selector missing from stylesheet",
+    );
+    assert_body_contains(&css, ".val-null {", "null selector missing from stylesheet");
+    assert_body_contains(
+        &css,
+        ".meta-tag {",
+        "sequence pill selector missing from stylesheet",
+    );
+    assert_body_contains(
+        &css,
+        "@media (max-width: 768px)",
+        "responsive breakpoint missing from stylesheet",
+    );
 }
 
 #[test]
@@ -1162,8 +1512,8 @@ fn test_serve_directory_index_symlink_policy() {
     symlink(&safe_target, sym_dir.join("safe-link.txt")).expect("create in-root symlink");
 
     // Dangerous target: outside the serve root.
-    let outside = std::env::temp_dir()
-        .join(format!("mdmd_outside_symtest_{}.txt", std::process::id()));
+    let outside =
+        std::env::temp_dir().join(format!("mdmd_outside_symtest_{}.txt", std::process::id()));
     fs::write(&outside, "secret").expect("write outside file");
     symlink(&outside, sym_dir.join("escape-link.txt")).expect("create out-of-root symlink");
 
@@ -1406,8 +1756,10 @@ fn test_serve_nested_entry_rewritten_links_root_relative() {
         root,
         entry: subdir.join("README.md"),
     };
-    let server =
-        ServerHandle::new("test_serve_nested_entry_rewritten_links_root_relative", &fixture);
+    let server = ServerHandle::new(
+        "test_serve_nested_entry_rewritten_links_root_relative",
+        &fixture,
+    );
 
     let resp = fetch(&client(), &server.url("/subdir/README.md"));
     assert_status(&resp, 200);
@@ -2117,10 +2469,7 @@ fn test_freshness_path_traversal_blocked() {
     let server = ServerHandle::new("test_freshness_path_traversal_blocked", &fixture);
     let c = client();
 
-    let resp = fetch(
-        &c,
-        &server.url("/_mdmd/freshness?path=../../etc/passwd"),
-    );
+    let resp = fetch(&c, &server.url("/_mdmd/freshness?path=../../etc/passwd"));
     assert_status(&resp, 404);
 }
 
@@ -2388,8 +2737,7 @@ fn test_cross_dir_allow_broad_root() {
         "# Page A\n\n[Page B](../other/b.md)\n",
     )
     .expect("write docs/a.md");
-    fs::write(base.join("other").join("b.md"), "# Page B\n\nContent.\n")
-        .expect("write other/b.md");
+    fs::write(base.join("other").join("b.md"), "# Page B\n\nContent.\n").expect("write other/b.md");
 
     let port = free_port();
     let mut child = Command::new(bin_path())
@@ -2417,10 +2765,7 @@ fn test_cross_dir_allow_broad_root() {
     assert_status(&resp_a, 200);
 
     let resp_b = fetch(&c, &format!("{base_url}/other/b.md"));
-    assert_status(
-        &resp_b,
-        200,
-    );
+    assert_status(&resp_b, 200);
 
     send_sigint(child.id());
     wait_with_timeout(&mut child, Duration::from_secs(5));
@@ -2440,8 +2785,7 @@ fn test_cross_dir_block_narrow_root() {
         "# Page A\n\n[Page B](../other/b.md)\n",
     )
     .expect("write docs/a.md");
-    fs::write(base.join("other").join("b.md"), "# Page B\n\nContent.\n")
-        .expect("write other/b.md");
+    fs::write(base.join("other").join("b.md"), "# Page B\n\nContent.\n").expect("write other/b.md");
 
     // Serve entry is docs/a.md: serve_root = docs/; other/ is outside root.
     let fixture = Fixture {
@@ -2454,10 +2798,7 @@ fn test_cross_dir_block_narrow_root() {
 
     // /other/b.md resolves to docs/other/b.md which does not exist → 404.
     let resp = fetch(&c, &server.url("/other/b.md"));
-    assert_status(
-        &resp,
-        404,
-    );
+    assert_status(&resp, 404);
 }
 
 // ---------------------------------------------------------------------------
@@ -2502,8 +2843,7 @@ fn test_default_startup_no_informational_stderr() {
 #[test]
 fn test_verbose_startup_diagnostics_emitted() {
     let fixture = Fixture::new(FixtureOptions::default());
-    let server =
-        ServerHandle::new_verbose("test_verbose_startup_diagnostics_emitted", &fixture);
+    let server = ServerHandle::new_verbose("test_verbose_startup_diagnostics_emitted", &fixture);
 
     // Make one request to ensure the server processed at least one event.
     let _ = fetch(&client(), &server.url("/"));
@@ -2789,4 +3129,3 @@ fn test_headed_env_no_verbose_suppresses_browser_failure_log() {
         "without --verbose, [browser] diagnostics must be suppressed even on open failure\nstderr:\n{stderr}"
     );
 }
-

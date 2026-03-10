@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::backlinks::BacklinkRef;
+use crate::frontmatter::{FrontmatterField, FrontmatterMeta, MetaValue};
 
 use comrak::{
     arena_tree::NodeEdge,
@@ -45,6 +46,8 @@ pub struct HeadingEntry {
 // by that subsystem once it is wired in.
 #[allow(dead_code)]
 pub struct PageShellContext<'a> {
+    /// Parsed YAML frontmatter metadata for this page, if present.
+    pub frontmatter: Option<&'a FrontmatterMeta>,
     /// Inbound backlinks for this page from the startup index.
     /// Pass `&[]` for non-markdown pages, static assets, and error responses.
     pub backlinks: &'a [BacklinkRef],
@@ -89,8 +92,7 @@ fn slugify(text: &str) -> String {
     for c in text.to_lowercase().chars() {
         if c.is_alphanumeric() {
             slug.push(c);
-        } else if (c == ' ' || c == '-' || c == '_')
-            && !slug.ends_with('-') {
+        } else if (c == ' ' || c == '-' || c == '_') && !slug.ends_with('-') {
             slug.push('-');
         }
         // all other characters are dropped
@@ -166,6 +168,119 @@ fn build_toc_html(headings: &[HeadingEntry]) -> String {
         ));
     }
     html.push_str("</ul>\n");
+    html
+}
+
+fn render_frontmatter_html(frontmatter: Option<&FrontmatterMeta>) -> String {
+    let Some(frontmatter) = frontmatter else {
+        return String::new();
+    };
+    if frontmatter.fields.is_empty() {
+        return String::new();
+    }
+
+    let mut body = String::new();
+    render_frontmatter_fields(&mut body, &frontmatter.fields, 0);
+    if body.is_empty() {
+        return String::new();
+    }
+
+    format!(
+        "<details class=\"frontmatter-panel\" aria-label=\"Document metadata\">\n\
+<summary>Properties</summary>\n\
+<dl class=\"frontmatter-fields\">\n\
+{body}</dl>\n\
+</details>\n"
+    )
+}
+
+fn render_frontmatter_fields(out: &mut String, fields: &[FrontmatterField], depth: usize) {
+    for field in fields {
+        out.push_str("<dt>");
+        out.push_str(&html_escape(&field.key));
+        out.push_str("</dt>\n<dd>");
+        out.push_str(&render_meta_value(&field.value, depth + 1));
+        out.push_str("</dd>\n");
+    }
+}
+
+fn render_meta_value(value: &MetaValue, depth: usize) -> String {
+    const MAX_RENDER_DEPTH: usize = 6;
+
+    if depth > MAX_RENDER_DEPTH {
+        return match value {
+            MetaValue::Scalar(text) => render_typed_scalar(text),
+            MetaValue::Null => "<span class=\"val-null\">null</span>".to_owned(),
+            MetaValue::Sequence(_) | MetaValue::Mapping(_) => html_escape("[complex value]"),
+        };
+    }
+
+    match value {
+        MetaValue::Scalar(text) => render_typed_scalar(text),
+        MetaValue::Null => "<span class=\"val-null\">null</span>".to_owned(),
+        MetaValue::Sequence(items) => render_meta_sequence(items, depth + 1),
+        MetaValue::Mapping(fields) => {
+            let mut html = String::from("<details class=\"frontmatter-nested\">\n<summary>");
+            let count = fields.len();
+            html.push_str(&count.to_string());
+            html.push_str(if count == 1 { " field" } else { " fields" });
+            html.push_str("</summary>\n<dl class=\"frontmatter-fields\">\n");
+            render_frontmatter_fields(&mut html, fields, depth + 1);
+            html.push_str("</dl>\n</details>");
+            html
+        }
+    }
+}
+
+fn scalar_css_class(text: &str) -> &'static str {
+    match text {
+        "true" | "false" => "val-boolean",
+        _ if !text.is_empty()
+            && text
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b == b'.' || b == b'-')
+            && text.parse::<f64>().is_ok() =>
+        {
+            "val-number"
+        }
+        _ => "val-string",
+    }
+}
+
+fn render_typed_scalar(text: &str) -> String {
+    let class = scalar_css_class(text);
+    format!("<span class=\"{}\">{}</span>", class, html_escape(text))
+}
+
+fn render_meta_sequence(items: &[MetaValue], depth: usize) -> String {
+    if items
+        .iter()
+        .all(|item| matches!(item, MetaValue::Scalar(_) | MetaValue::Null))
+    {
+        let mut html = String::new();
+        for item in items {
+            match item {
+                MetaValue::Scalar(text) => {
+                    html.push_str("<span class=\"meta-tag\">");
+                    html.push_str(&html_escape(text));
+                    html.push_str("</span>");
+                }
+                MetaValue::Null => html.push_str("<span class=\"val-null\">null</span>"),
+                MetaValue::Sequence(_) | MetaValue::Mapping(_) => {}
+            }
+        }
+        return html;
+    }
+
+    let mut html = String::from("<dl class=\"frontmatter-fields\">\n");
+    for (index, item) in items.iter().enumerate() {
+        html.push_str("<dt>");
+        html.push_str(&(index + 1).to_string());
+        html.push_str("</dt>\n<dd>");
+        html.push_str(&render_meta_value(item, depth + 1));
+        html.push_str("</dd>\n");
+    }
+    html.push_str("</dl>");
     html
 }
 
@@ -449,15 +564,22 @@ pub fn build_page_shell(
     _serve_root: &Path,
     ctx: &PageShellContext,
 ) -> String {
-    // Page title: first H1 text, then file stem, then a safe default.
-    let title_raw = headings
-        .iter()
-        .find(|h| h.level == 1)
-        .map(|h| h.text.as_str())
+    // Page title precedence: frontmatter title, then first H1, then file stem.
+    let title_raw = ctx
+        .frontmatter
+        .and_then(|meta| meta.title.as_deref())
+        .filter(|title| !title.is_empty())
+        .or_else(|| {
+            headings
+                .iter()
+                .find(|h| h.level == 1)
+                .map(|h| h.text.as_str())
+        })
         .or_else(|| file_path.file_stem().and_then(|s| s.to_str()))
         .unwrap_or("Document");
 
     let title = html_escape(title_raw);
+    let frontmatter_html = render_frontmatter_html(ctx.frontmatter);
     let content_html = inject_heading_ids(body_html, headings);
     let toc_html = build_toc_html(headings);
     let backlinks_html = build_backlinks_html(ctx.backlinks);
@@ -468,10 +590,7 @@ pub fn build_page_shell(
         None => String::new(),
     };
     let path_meta = match ctx.page_url_path {
-        Some(p) => format!(
-            "<meta name=\"mdmd-path\" content=\"{}\">\n",
-            html_escape(p)
-        ),
+        Some(p) => format!("<meta name=\"mdmd-path\" content=\"{}\">\n", html_escape(p)),
         None => String::new(),
     };
 
@@ -530,6 +649,7 @@ This file has changed on disk.\n\
 <nav class=\"toc-sidebar\">\n\
 {toc_html}</nav>\n\
 <main class=\"content\">\n\
+{frontmatter_html}\
 {content_html}\
 {backlinks_html}</main>\n\
 </div>\n\
@@ -828,7 +948,12 @@ mod tests {
             &headings,
             Path::new("/root/doc.md"),
             Path::new("/root"),
-            &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None },
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
         );
         assert!(
             page.contains("<nav class=\"toc-sidebar\">"),
@@ -841,7 +966,18 @@ mod tests {
     #[test]
     fn page_shell_contains_script_tag() {
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None });
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
         assert!(
             page.contains("<script src=\"/assets/mdmd.js\">"),
             "script tag present"
@@ -851,7 +987,18 @@ mod tests {
     #[test]
     fn page_shell_contains_pinned_mermaid_cdn_script() {
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None });
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
         assert!(
             page.contains(
                 "<script src=\"https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js\">"
@@ -863,7 +1010,18 @@ mod tests {
     #[test]
     fn page_shell_contains_css_link() {
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None });
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
         assert!(
             page.contains("href=\"/assets/mdmd.css\""),
             "css link present"
@@ -874,7 +1032,18 @@ mod tests {
     fn page_shell_heading_ids_injected() {
         let input = "# Title\n\n## Sub\n";
         let (html_body, headings) = render(input);
-        let page = build_page_shell(&html_body, &headings, Path::new("/r/f.md"), Path::new("/r"), &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None });
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
         assert!(
             page.contains("<h1 id=\"title\">"),
             "h1 id injected in content"
@@ -1100,11 +1269,7 @@ mod tests {
         // serve_root = /tmp (broad), file_dir = /tmp/docs
         // link: ../other/b.md → resolves to /tmp/other/b.md
         // strip_prefix(/tmp) = other/b.md → "/other/b.md" (inside broad root → ALLOWED)
-        let result = rewrite_url(
-            "../other/b.md",
-            Path::new("/tmp/docs"),
-            Path::new("/tmp"),
-        );
+        let result = rewrite_url("../other/b.md", Path::new("/tmp/docs"), Path::new("/tmp"));
         assert_eq!(
             result,
             Some("/other/b.md".to_owned()),
@@ -1158,7 +1323,11 @@ mod tests {
         // serve_root = /workspace  (CWD)
         // file_path  = /workspace/playground/README.md
         // link: [t](subdir/nested.md) → /playground/subdir/nested.md
-        let html = render_abs("[t](subdir/nested.md)\n", "/workspace", "playground/README.md");
+        let html = render_abs(
+            "[t](subdir/nested.md)\n",
+            "/workspace",
+            "playground/README.md",
+        );
         assert!(
             html.contains("href=\"/playground/subdir/nested.md\""),
             "expected /playground/subdir/nested.md, got: {html}"
@@ -1194,7 +1363,11 @@ mod tests {
         // serve_root = /workspace
         // file_path  = /workspace/playground/README.md
         // image: ![img](img/logo.png) → /playground/img/logo.png
-        let html = render_abs("![img](img/logo.png)\n", "/workspace", "playground/README.md");
+        let html = render_abs(
+            "![img](img/logo.png)\n",
+            "/workspace",
+            "playground/README.md",
+        );
         assert!(
             html.contains("src=\"/playground/img/logo.png\""),
             "expected /playground/img/logo.png (image rewrite), got: {html}"
@@ -1243,7 +1416,12 @@ mod tests {
             &headings,
             Path::new("/r/f.md"),
             Path::new("/r"),
-            &PageShellContext { backlinks: &bls, file_mtime_secs: None, page_url_path: None },
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &bls,
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
         );
         // Header label with count (2 backlink refs supplied)
         assert!(
@@ -1285,7 +1463,12 @@ mod tests {
             &headings,
             Path::new("/r/f.md"),
             Path::new("/r"),
-            &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None },
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
         );
         assert!(
             !page.contains("backlinks-panel"),
@@ -1309,7 +1492,12 @@ mod tests {
             &headings,
             Path::new("/r/f.md"),
             Path::new("/r"),
-            &PageShellContext { backlinks: &[], file_mtime_secs: None, page_url_path: None },
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
         );
         assert!(
             page.contains("id=\"mdmd-change-notice\""),
@@ -1331,6 +1519,7 @@ mod tests {
         // → HTML contains content="12345" and content="docs/test.md".
         let (html_body, headings) = render("# Test\n");
         let ctx = PageShellContext {
+            frontmatter: None,
             backlinks: &[],
             file_mtime_secs: Some(12345),
             page_url_path: Some("docs/test.md"),
@@ -1361,6 +1550,7 @@ mod tests {
         // Test 9: file_mtime_secs = None → HTML must NOT contain mdmd-mtime meta tag.
         let (html_body, headings) = render("# Test\n");
         let ctx = PageShellContext {
+            frontmatter: None,
             backlinks: &[],
             file_mtime_secs: None,
             page_url_path: None,
@@ -1394,6 +1584,7 @@ mod tests {
             Path::new("/r/f.md"),
             Path::new("/r"),
             &PageShellContext {
+                frontmatter: None,
                 backlinks: &bls,
                 file_mtime_secs: None,
                 page_url_path: None,
@@ -1421,6 +1612,7 @@ mod tests {
             Path::new("/r/f.md"),
             Path::new("/r"),
             &PageShellContext {
+                frontmatter: None,
                 backlinks: &bls,
                 file_mtime_secs: None,
                 page_url_path: None,
@@ -1449,6 +1641,7 @@ mod tests {
             Path::new("/r/f.md"),
             Path::new("/r"),
             &PageShellContext {
+                frontmatter: None,
                 backlinks: &bls,
                 file_mtime_secs: None,
                 page_url_path: None,
@@ -1470,5 +1663,260 @@ mod tests {
             page.contains("&amp;amp;"),
             "& in snippet must produce &amp;amp; (double-escaped), got: {page}"
         );
+    }
+
+    fn fm_field(key: &str, value: MetaValue) -> FrontmatterField {
+        FrontmatterField {
+            key: key.to_owned(),
+            value,
+        }
+    }
+
+    fn fm_meta(fields: Vec<FrontmatterField>, title: Option<&str>) -> FrontmatterMeta {
+        FrontmatterMeta {
+            fields,
+            title: title.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn frontmatter_title_beats_h1() {
+        eprintln!("scenario: frontmatter title precedence");
+        let (html_body, headings) = render("# Heading title\n");
+        let meta = fm_meta(
+            vec![fm_field(
+                "title",
+                MetaValue::Scalar("Frontmatter title".to_owned()),
+            )],
+            Some("Frontmatter title"),
+        );
+
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/doc.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: Some(&meta),
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
+
+        assert!(page.contains("<title>Frontmatter title · mdmd serve</title>"));
+    }
+
+    #[test]
+    fn h1_fallback_works_without_plain_string_frontmatter_title() {
+        eprintln!("scenario: h1 title fallback");
+        let (html_body, headings) = render("# Heading title\n");
+        let meta = fm_meta(
+            vec![fm_field(
+                "title",
+                MetaValue::Sequence(vec![MetaValue::Scalar("not".to_owned())]),
+            )],
+            None,
+        );
+
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/doc.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: Some(&meta),
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
+
+        assert!(page.contains("<title>Heading title · mdmd serve</title>"));
+    }
+
+    #[test]
+    fn file_stem_fallback_works_without_frontmatter_or_h1() {
+        eprintln!("scenario: file stem title fallback");
+        let (html_body, headings) = render("body only\n");
+
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/fallback-name.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
+
+        assert!(page.contains("<title>fallback-name · mdmd serve</title>"));
+    }
+
+    #[test]
+    fn frontmatter_panel_uses_section_semantics_and_precedes_body_and_backlinks() {
+        eprintln!("scenario: frontmatter panel order");
+        let (html_body, headings) = render("# Body title\n\ncontent\n");
+        let meta = fm_meta(
+            vec![fm_field("summary", MetaValue::Scalar("short".to_owned()))],
+            None,
+        );
+        let backlinks = vec![BacklinkRef {
+            source_url_path: "/docs/ref.md".to_owned(),
+            source_display: "Ref".to_owned(),
+            snippet: "context".to_owned(),
+            target_fragment: None,
+        }];
+
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/doc.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: Some(&meta),
+                backlinks: &backlinks,
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
+
+        let panel_pos = page.find("<details class=\"frontmatter-panel\"").unwrap();
+        let body_pos = page.find("<h1 id=\"body-title\">").unwrap();
+        let backlinks_pos = page.find("<section class=\"backlinks-panel\"").unwrap();
+        assert!(page.contains("aria-label=\"Document metadata\""));
+        assert!(panel_pos < body_pos);
+        assert!(body_pos < backlinks_pos);
+    }
+
+    #[test]
+    fn frontmatter_panel_escapes_hostile_keys_and_values() {
+        eprintln!("scenario: frontmatter escaping");
+        let meta = fm_meta(
+            vec![fm_field(
+                "<script>",
+                MetaValue::Scalar("\"quoted\" & <tag>".to_owned()),
+            )],
+            None,
+        );
+
+        let html = render_frontmatter_html(Some(&meta));
+
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(html.contains("&quot;quoted&quot; &amp; &lt;tag&gt;"));
+        assert!(!html.contains("<script>"));
+    }
+
+    #[test]
+    fn frontmatter_panel_omitted_when_absent_or_empty() {
+        eprintln!("scenario: frontmatter omission");
+        let empty = fm_meta(vec![], None);
+
+        assert!(render_frontmatter_html(None).is_empty());
+        assert!(render_frontmatter_html(Some(&empty)).is_empty());
+    }
+
+    #[test]
+    fn frontmatter_null_renders_meta_null() {
+        eprintln!("scenario: frontmatter null");
+        let meta = fm_meta(vec![fm_field("empty", MetaValue::Null)], None);
+
+        let html = render_frontmatter_html(Some(&meta));
+
+        assert!(html.contains("<span class=\"val-null\">null</span>"));
+    }
+
+    #[test]
+    fn frontmatter_scalar_sequence_renders_meta_tags() {
+        eprintln!("scenario: frontmatter scalar tags");
+        let meta = fm_meta(
+            vec![fm_field(
+                "tags",
+                MetaValue::Sequence(vec![
+                    MetaValue::Scalar("alpha".to_owned()),
+                    MetaValue::Scalar("beta".to_owned()),
+                ]),
+            )],
+            None,
+        );
+
+        let html = render_frontmatter_html(Some(&meta));
+
+        assert!(html.contains("<span class=\"meta-tag\">alpha</span>"));
+        assert!(html.contains("<span class=\"meta-tag\">beta</span>"));
+    }
+
+    #[test]
+    fn frontmatter_nested_mapping_renders_nested_definition_lists() {
+        eprintln!("scenario: frontmatter nested mapping");
+        let meta = fm_meta(
+            vec![fm_field(
+                "details",
+                MetaValue::Mapping(vec![
+                    fm_field("owner", MetaValue::Scalar("team".to_owned())),
+                    fm_field(
+                        "links",
+                        MetaValue::Sequence(vec![
+                            MetaValue::Mapping(vec![fm_field(
+                                "href",
+                                MetaValue::Scalar("/doc".to_owned()),
+                            )]),
+                            MetaValue::Scalar("fallback".to_owned()),
+                        ]),
+                    ),
+                ]),
+            )],
+            None,
+        );
+
+        let html = render_frontmatter_html(Some(&meta));
+
+        assert!(html.contains("<dl class=\"frontmatter-fields\">"));
+        assert!(html.contains("<dt>details</dt>"));
+        assert!(html.contains("<dt>owner</dt>"));
+        assert!(html.contains("<dt>links</dt>"));
+        assert!(html.contains("<dt>1</dt>"));
+        assert!(html.contains("<dt>href</dt>"));
+    }
+
+    #[test]
+    fn frontmatter_panel_emits_no_heading_tags() {
+        eprintln!("scenario: frontmatter no heading tags");
+        let meta = fm_meta(
+            vec![fm_field("title", MetaValue::Scalar("Doc".to_owned()))],
+            Some("Doc"),
+        );
+
+        let html = render_frontmatter_html(Some(&meta));
+
+        for tag in ["<h1", "<h2", "<h3", "<h4", "<h5", "<h6"] {
+            assert!(!html.contains(tag), "frontmatter panel must not emit {tag}");
+        }
+    }
+
+    #[test]
+    fn non_frontmatter_pages_keep_existing_shell_behavior() {
+        eprintln!("scenario: non frontmatter shell");
+        let (html_body, headings) = render("# Existing title\n\nbody\n");
+
+        let page = build_page_shell(
+            &html_body,
+            &headings,
+            Path::new("/r/existing.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
+
+        assert!(page.contains("<title>Existing title · mdmd serve</title>"));
+        assert!(!page.contains("frontmatter-panel"));
+        assert!(page.contains("<h1 id=\"existing-title\">Existing title</h1>"));
     }
 }

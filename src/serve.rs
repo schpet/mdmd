@@ -16,6 +16,7 @@ use tokio::signal;
 use tower_http::compression::CompressionLayer;
 
 use crate::backlinks::BacklinkRef;
+use crate::frontmatter;
 use crate::html;
 use crate::web_assets;
 
@@ -804,8 +805,7 @@ async fn rich_not_found_response(state: &Arc<AppState>, norm_display: &str) -> R
     };
 
     // Build directory listing snippet for nearest parent.
-    let listing_html =
-        build_nearest_parent_listing(state, &nearest_parent, &parent_url).await;
+    let listing_html = build_nearest_parent_listing(state, &nearest_parent, &parent_url).await;
 
     let requested_escaped = html_escape_text(&requested_path);
     let parent_url_escaped = html_escape_text(&parent_url);
@@ -895,12 +895,10 @@ pub fn apply_dir_listing_policy(entries: Vec<(String, bool)>) -> Vec<(String, bo
         .filter(|(name, _)| !name.starts_with('.'))
         .collect();
 
-    filtered.sort_by(|(a_name, a_dir), (b_name, b_dir)| {
-        match (a_dir, b_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a_name.to_lowercase().cmp(&b_name.to_lowercase()),
-        }
+    filtered.sort_by(|(a_name, a_dir), (b_name, b_dir)| match (a_dir, b_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a_name.to_lowercase().cmp(&b_name.to_lowercase()),
     });
 
     filtered
@@ -912,10 +910,7 @@ pub fn apply_dir_listing_policy(entries: Vec<(String, bool)>) -> Vec<(String, bo
 /// Each path segment is percent-encoded in the `href` and displayed as-is.
 /// The root segment always links to `"/"`.
 fn build_breadcrumbs(url_prefix: &str) -> String {
-    let segments: Vec<&str> = url_prefix
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .collect();
+    let segments: Vec<&str> = url_prefix.split('/').filter(|s| !s.is_empty()).collect();
 
     let mut html = String::from("<a href=\"/\">/</a>");
 
@@ -1039,7 +1034,11 @@ async fn render_directory_index_response(
     body.push_str("</ul></body></html>");
 
     let etag = compute_etag(body.as_bytes());
-    vlog!(state.verbose, "[dir-index] path={url_prefix} entries={}", entries.len());
+    vlog!(
+        state.verbose,
+        "[dir-index] path={url_prefix} entries={}",
+        entries.len()
+    );
     vlog!(
         state.verbose,
         "[request] path={url_prefix} mode=directory_index entries={}",
@@ -1119,17 +1118,26 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
         // Evaluate If-None-Match first (RFC 7232 §6 preference order).
         if let Some(ref inm) = if_none_match {
             if etag_matches(inm, etag) {
-                vlog!(state.verbose, "[cache] path={raw_path} etag={etag} status=304");
+                vlog!(
+                    state.verbose,
+                    "[cache] path={raw_path} etag={etag} status=304"
+                );
                 return not_modified_response(etag, &last_modified);
             }
         } else if let Some(ref ims) = if_modified_since {
             if not_modified_since(ims, state.asset_mtime) {
-                vlog!(state.verbose, "[cache] path={raw_path} etag={etag} status=304");
+                vlog!(
+                    state.verbose,
+                    "[cache] path={raw_path} etag={etag} status=304"
+                );
                 return not_modified_response(etag, &last_modified);
             }
         }
 
-        vlog!(state.verbose, "[cache] path={raw_path} etag={etag} status=200");
+        vlog!(
+            state.verbose,
+            "[cache] path={raw_path} etag={etag} status=200"
+        );
         vlog!(state.verbose, "[request] path={raw_path} mode=asset");
         return Response::builder()
             .status(StatusCode::OK)
@@ -1147,17 +1155,26 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
 
         if let Some(ref inm) = if_none_match {
             if etag_matches(inm, etag) {
-                vlog!(state.verbose, "[cache] path={raw_path} etag={etag} status=304");
+                vlog!(
+                    state.verbose,
+                    "[cache] path={raw_path} etag={etag} status=304"
+                );
                 return not_modified_response(etag, &last_modified);
             }
         } else if let Some(ref ims) = if_modified_since {
             if not_modified_since(ims, state.asset_mtime) {
-                vlog!(state.verbose, "[cache] path={raw_path} etag={etag} status=304");
+                vlog!(
+                    state.verbose,
+                    "[cache] path={raw_path} etag={etag} status=304"
+                );
                 return not_modified_response(etag, &last_modified);
             }
         }
 
-        vlog!(state.verbose, "[cache] path={raw_path} etag={etag} status=200");
+        vlog!(
+            state.verbose,
+            "[cache] path={raw_path} etag={etag} status=200"
+        );
         vlog!(state.verbose, "[request] path={raw_path} mode=asset");
         return Response::builder()
             .status(StatusCode::OK)
@@ -1173,14 +1190,20 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     let decoded = match percent_decode(&raw_path) {
         Ok(d) => d,
         Err(_) => {
-            vlog!(state.verbose, "[resolve] path={raw_path} branch=denied reason=invalid-percent-encoding");
+            vlog!(
+                state.verbose,
+                "[resolve] path={raw_path} branch=denied reason=invalid-percent-encoding"
+            );
             return not_found_response();
         }
     };
 
     // Reject null bytes anywhere in the decoded path.
     if decoded.contains('\0') {
-        vlog!(state.verbose, "[resolve] path={raw_path} branch=denied reason=null-byte");
+        vlog!(
+            state.verbose,
+            "[resolve] path={raw_path} branch=denied reason=null-byte"
+        );
         return not_found_response();
     }
 
@@ -1188,7 +1211,10 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     let normalized = match normalize_path(&decoded) {
         Some(n) => n,
         None => {
-            vlog!(state.verbose, "[resolve] path={raw_path} branch=denied reason=path-traversal");
+            vlog!(
+                state.verbose,
+                "[resolve] path={raw_path} branch=denied reason=path-traversal"
+            );
             return not_found_response();
         }
     };
@@ -1224,11 +1250,13 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
                         "[resolve] path={norm_display} branch=dir-index dir={}",
                         candidate.display()
                     );
-                    return render_directory_index_response(&state, &candidate, &url_prefix)
-                        .await;
+                    return render_directory_index_response(&state, &candidate, &url_prefix).await;
                 }
             }
-            vlog!(state.verbose, "[resolve] path={norm_display} branch=not-found");
+            vlog!(
+                state.verbose,
+                "[resolve] path={norm_display} branch=not-found"
+            );
             return rich_not_found_response(&state, &norm_display).await;
         }
     };
@@ -1237,7 +1265,10 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     let canonical = match tokio::fs::canonicalize(&resolved).await {
         Ok(c) => c,
         Err(_) => {
-            vlog!(state.verbose, "[resolve] path={norm_display} branch=denied reason=canonicalize-failed");
+            vlog!(
+                state.verbose,
+                "[resolve] path={norm_display} branch=denied reason=canonicalize-failed"
+            );
             return not_found_response();
         }
     };
@@ -1255,7 +1286,10 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     let file_meta = match tokio::fs::metadata(&canonical).await {
         Ok(m) => m,
         Err(_) => {
-            vlog!(state.verbose, "[resolve] path={norm_display} branch=denied reason=metadata-failed");
+            vlog!(
+                state.verbose,
+                "[resolve] path={norm_display} branch=denied reason=metadata-failed"
+            );
             return not_found_response();
         }
     };
@@ -1263,11 +1297,17 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
     let mtime = file_meta.modified().ok();
 
     if size > MAX_FILE_SIZE {
-        vlog!(state.verbose, "[resolve] path={norm_display} branch=denied reason=too-large size={size}");
+        vlog!(
+            state.verbose,
+            "[resolve] path={norm_display} branch=denied reason=too-large size={size}"
+        );
         return too_large_response(&norm_display, size);
     }
 
-    vlog!(state.verbose, "[resolve] path={norm_display} branch={branch} size={size}");
+    vlog!(
+        state.verbose,
+        "[resolve] path={norm_display} branch={branch} size={size}"
+    );
 
     // Step 7: dispatch on extension.
     let ext = canonical.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -1288,19 +1328,28 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
 
             if let Some(ref inm) = if_none_match {
                 if etag_matches(inm, &etag) {
-                    vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=304");
+                    vlog!(
+                        state.verbose,
+                        "[cache] path={norm_display} etag={etag} status=304"
+                    );
                     return not_modified_response(&etag, &last_modified);
                 }
             } else if let Some(ref ims) = if_modified_since {
                 if let Some(mt) = mtime {
                     if not_modified_since(ims, mt) {
-                        vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=304");
+                        vlog!(
+                            state.verbose,
+                            "[cache] path={norm_display} etag={etag} status=304"
+                        );
                         return not_modified_response(&etag, &last_modified);
                     }
                 }
             }
 
-            vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=200");
+            vlog!(
+                state.verbose,
+                "[cache] path={norm_display} etag={etag} status=200"
+            );
             vlog!(state.verbose, "[request] path={norm_display} mode=raw");
             return Response::builder()
                 .status(StatusCode::OK)
@@ -1313,15 +1362,25 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
         }
 
         // Default: render as a full HTML page with TOC shell.
-        let (html_body, headings) =
-            html::render_markdown(&content, &canonical, &state.canonical_root, state.verbose);
+        let extracted = frontmatter::extract(&content);
+        let (html_body, headings) = html::render_markdown(
+            extracted.render_body.as_ref(),
+            &canonical,
+            &state.canonical_root,
+            state.verbose,
+        );
         let key = crate::backlinks::url_key_from_rel_path(&norm_display);
         let backlinks_slice = state.backlinks.get(&key).map(Vec::as_slice).unwrap_or(&[]);
-        vlog!(state.verbose, "[backlinks] key={key} found={}", backlinks_slice.len());
+        vlog!(
+            state.verbose,
+            "[backlinks] key={key} found={}",
+            backlinks_slice.len()
+        );
         let file_mtime_secs = mtime
             .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
             .map(|d| d.as_secs());
         let shell_ctx = html::PageShellContext {
+            frontmatter: extracted.meta.as_ref(),
             backlinks: backlinks_slice,
             file_mtime_secs,
             page_url_path: Some(&norm_display),
@@ -1341,19 +1400,28 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
 
         if let Some(ref inm) = if_none_match {
             if etag_matches(inm, &etag) {
-                vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=304");
+                vlog!(
+                    state.verbose,
+                    "[cache] path={norm_display} etag={etag} status=304"
+                );
                 return not_modified_response(&etag, &last_modified);
             }
         } else if let Some(ref ims) = if_modified_since {
             if let Some(mt) = mtime {
                 if not_modified_since(ims, mt) {
-                    vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=304");
+                    vlog!(
+                        state.verbose,
+                        "[cache] path={norm_display} etag={etag} status=304"
+                    );
                     return not_modified_response(&etag, &last_modified);
                 }
             }
         }
 
-        vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=200");
+        vlog!(
+            state.verbose,
+            "[cache] path={norm_display} etag={etag} status=200"
+        );
         vlog!(state.verbose, "[request] path={norm_display} mode=rendered");
         Response::builder()
             .status(StatusCode::OK)
@@ -1377,20 +1445,32 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
 
         if let Some(ref inm) = if_none_match {
             if etag_matches(inm, &etag) {
-                vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=304");
+                vlog!(
+                    state.verbose,
+                    "[cache] path={norm_display} etag={etag} status=304"
+                );
                 return not_modified_response(&etag, &last_modified);
             }
         } else if let Some(ref ims) = if_modified_since {
             if let Some(mt) = mtime {
                 if not_modified_since(ims, mt) {
-                    vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=304");
+                    vlog!(
+                        state.verbose,
+                        "[cache] path={norm_display} etag={etag} status=304"
+                    );
                     return not_modified_response(&etag, &last_modified);
                 }
             }
         }
 
-        vlog!(state.verbose, "[cache] path={norm_display} etag={etag} status=200");
-        vlog!(state.verbose, "[request] path={norm_display} mode=static_asset");
+        vlog!(
+            state.verbose,
+            "[cache] path={norm_display} etag={etag} status=200"
+        );
+        vlog!(
+            state.verbose,
+            "[request] path={norm_display} mode=static_asset"
+        );
         let content_type = mime_for_ext(ext);
         Response::builder()
             .status(StatusCode::OK)
@@ -1440,7 +1520,10 @@ async fn freshness_handler(State(state): State<Arc<AppState>>, req: Request) -> 
     let decoded = match percent_decode(path_raw) {
         Ok(d) => d,
         Err(_) => {
-            vlog!(state.verbose, "[freshness] path={path_raw} reason=invalid-percent-encoding");
+            vlog!(
+                state.verbose,
+                "[freshness] path={path_raw} reason=invalid-percent-encoding"
+            );
             return freshness_404();
         }
     };
@@ -1473,14 +1556,20 @@ async fn freshness_handler(State(state): State<Arc<AppState>>, req: Request) -> 
     let canonical = match tokio::fs::canonicalize(&candidate).await {
         Ok(c) => c,
         Err(_) => {
-            vlog!(state.verbose, "[freshness] path={display_path} reason=canonicalize-failed");
+            vlog!(
+                state.verbose,
+                "[freshness] path={display_path} reason=canonicalize-failed"
+            );
             return freshness_404();
         }
     };
 
     // Containment check: must stay within canonical_root.
     if !canonical.starts_with(&state.canonical_root) {
-        vlog!(state.verbose, "[freshness] path={display_path} reason=outside-root");
+        vlog!(
+            state.verbose,
+            "[freshness] path={display_path} reason=outside-root"
+        );
         return freshness_404();
     }
 
@@ -1488,7 +1577,10 @@ async fn freshness_handler(State(state): State<Arc<AppState>>, req: Request) -> 
     let meta = match tokio::fs::metadata(&canonical).await {
         Ok(m) => m,
         Err(_) => {
-            vlog!(state.verbose, "[freshness] path={display_path} reason=metadata-failed");
+            vlog!(
+                state.verbose,
+                "[freshness] path={display_path} reason=metadata-failed"
+            );
             return freshness_404();
         }
     };
@@ -1501,7 +1593,10 @@ async fn freshness_handler(State(state): State<Arc<AppState>>, req: Request) -> 
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    vlog!(state.verbose, "[freshness] path={display_path} mtime={mtime_secs}");
+    vlog!(
+        state.verbose,
+        "[freshness] path={display_path} mtime={mtime_secs}"
+    );
 
     let body = serde_json::json!({ "mtime": mtime_secs }).to_string();
     Response::builder()
@@ -1521,7 +1616,13 @@ async fn freshness_handler(State(state): State<Arc<AppState>>, req: Request) -> 
 /// Binds to `bind_addr` starting at `start_port`, retrying on `EADDRINUSE` up
 /// to 100 times.  The server shuts down cleanly when SIGINT (Ctrl+C) is
 /// received.
-pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open: bool, verbose: bool) -> io::Result<()> {
+pub async fn run_serve(
+    file: String,
+    bind_addr: String,
+    start_port: u16,
+    no_open: bool,
+    verbose: bool,
+) -> io::Result<()> {
     // Use CWD as the default serve root.
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let canonical_cwd = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
@@ -1579,7 +1680,10 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open
         };
         if n == 0 {
             // EOF (null stdin): auto-proceed without confirmation.
-            vlog!(verbose, "[info] Non-interactive stdin; proceeding without confirmation.");
+            vlog!(
+                verbose,
+                "[info] Non-interactive stdin; proceeding without confirmation."
+            );
         } else {
             let trimmed = answer.trim().to_lowercase();
             if trimmed != "y" && trimmed != "yes" {
@@ -1682,7 +1786,10 @@ pub async fn run_serve(file: String, bind_addr: String, start_port: u16, no_open
         .ok()
         .flatten();
     if let Some(ref ts) = tailscale {
-        println!("http://{}:{bound_port}{}", ts.dns_name, state.entry_url_path);
+        println!(
+            "http://{}:{bound_port}{}",
+            ts.dns_name, state.entry_url_path
+        );
         println!("http://{}:{bound_port}{}", ts.ip, state.entry_url_path);
     } else {
         println!("http://127.0.0.1:{bound_port}{}", state.entry_url_path);
@@ -1773,10 +1880,7 @@ mod tests {
     fn url_path_top_level_file() {
         let root = PathBuf::from("/home/user/docs");
         let entry = PathBuf::from("/home/user/docs/README.md");
-        assert_eq!(
-            derive_entry_url_path(&entry, &root).unwrap(),
-            "/README.md"
-        );
+        assert_eq!(derive_entry_url_path(&entry, &root).unwrap(), "/README.md");
     }
 
     #[test]
@@ -1827,7 +1931,8 @@ mod tests {
 
     #[test]
     fn tailscale_info_parses_dns_and_ipv4() {
-        let json = br#"{"Self":{"DNSName":"myhost.ts.net.","TailscaleIPs":["100.1.2.3","fd7a::1"]}}"#;
+        let json =
+            br#"{"Self":{"DNSName":"myhost.ts.net.","TailscaleIPs":["100.1.2.3","fd7a::1"]}}"#;
         let info = parse_tailscale_info(json).unwrap();
         assert_eq!(info.dns_name, "myhost.ts.net");
         assert_eq!(info.ip, "100.1.2.3");
@@ -1978,7 +2083,11 @@ mod tests {
             format!("http://{ts_ip}:{port}{path}"),
         ];
 
-        assert_eq!(block.len(), 2, "expected exactly two URL lines when tailscale is present");
+        assert_eq!(
+            block.len(),
+            2,
+            "expected exactly two URL lines when tailscale is present"
+        );
         assert!(
             block[0].starts_with("http://myhost.ts.net:"),
             "first line must be tailscale MagicDNS URL, got: {:?}",
@@ -2017,7 +2126,11 @@ mod tests {
             block.push(format!("http://{h}:{port}{path}"));
         }
 
-        assert_eq!(block.len(), 1, "expected exactly one URL line when tailscale is absent");
+        assert_eq!(
+            block.len(),
+            1,
+            "expected exactly one URL line when tailscale is absent"
+        );
         assert!(
             block[0].starts_with("http://127.0.0.1:"),
             "sole line must be local URL, got: {:?}",
@@ -2358,10 +2471,7 @@ mod tests {
 
     #[test]
     fn listing_policy_only_dotfiles_filtered_out() {
-        let entries = vec![
-            (".env".to_owned(), false),
-            (".gitignore".to_owned(), false),
-        ];
+        let entries = vec![(".env".to_owned(), false), (".gitignore".to_owned(), false)];
         let result = apply_dir_listing_policy(entries);
         assert!(result.is_empty());
     }
@@ -2380,7 +2490,10 @@ mod tests {
     fn breadcrumbs_one_segment() {
         let html = build_breadcrumbs("/docs");
         assert!(html.contains("href=\"/\""), "root link missing: {html}");
-        assert!(html.contains("href=\"/docs/\""), "docs link missing: {html}");
+        assert!(
+            html.contains("href=\"/docs/\""),
+            "docs link missing: {html}"
+        );
         assert!(html.contains(">docs<"), "docs text missing: {html}");
     }
 
@@ -2388,8 +2501,14 @@ mod tests {
     fn breadcrumbs_two_segments() {
         let html = build_breadcrumbs("/docs/guide");
         assert!(html.contains("href=\"/\""), "root link missing: {html}");
-        assert!(html.contains("href=\"/docs/\""), "docs link missing: {html}");
-        assert!(html.contains("href=\"/docs/guide/\""), "guide link missing: {html}");
+        assert!(
+            html.contains("href=\"/docs/\""),
+            "docs link missing: {html}"
+        );
+        assert!(
+            html.contains("href=\"/docs/guide/\""),
+            "guide link missing: {html}"
+        );
         assert!(html.contains(">guide<"), "guide text missing: {html}");
     }
 
@@ -2511,7 +2630,10 @@ mod tests {
         // Only root itself exists (no subdirs created).
 
         let result = nearest_existing_parent(&root, &root, "a/b/c/missing.md");
-        assert_eq!(result, root, "should fall back to root when all parents missing");
+        assert_eq!(
+            result, root,
+            "should fall back to root when all parents missing"
+        );
     }
 
     #[test]
@@ -2605,14 +2727,12 @@ mod tests {
         let normalized = normalize_path(&decoded).unwrap();
         let norm_display = normalized.display().to_string();
         assert_eq!(
-            norm_display,
-            "docs/read me.md",
+            norm_display, "docs/read me.md",
             "decoded path must produce norm_display without leading slash"
         );
         let key = crate::backlinks::url_key_from_rel_path(&norm_display);
         assert_eq!(
-            key,
-            "/docs/read me.md",
+            key, "/docs/read me.md",
             "key must have leading slash and decoded (space-containing) content"
         );
     }
@@ -2642,10 +2762,7 @@ mod tests {
         std::fs::write(docs.join("a.md"), "# A Doc\n\nSee [self](a.md).\n").unwrap();
 
         let idx = crate::backlinks::build_backlinks_index(tmp.path(), false);
-        let is_empty = idx
-            .get("/docs/a.md")
-            .map(|v| v.is_empty())
-            .unwrap_or(true);
+        let is_empty = idx.get("/docs/a.md").map(|v| v.is_empty()).unwrap_or(true);
         assert!(
             is_empty,
             "self-link must not produce a backlink entry for /docs/a.md"
@@ -2750,26 +2867,39 @@ mod tests {
 
     #[test]
     fn macos_ssh_connection_is_not_headed() {
-        let env = EnvSnapshot { ssh_connection: true, ..clear_env() };
+        let env = EnvSnapshot {
+            ssh_connection: true,
+            ..clear_env()
+        };
         assert!(!is_headed_for(RuntimePlatform::MacOs, &env));
     }
 
     #[test]
     fn macos_ssh_tty_is_not_headed() {
-        let env = EnvSnapshot { ssh_tty: true, ..clear_env() };
+        let env = EnvSnapshot {
+            ssh_tty: true,
+            ..clear_env()
+        };
         assert!(!is_headed_for(RuntimePlatform::MacOs, &env));
     }
 
     #[test]
     fn macos_both_ssh_vars_is_not_headed() {
-        let env = EnvSnapshot { ssh_connection: true, ssh_tty: true, ..clear_env() };
+        let env = EnvSnapshot {
+            ssh_connection: true,
+            ssh_tty: true,
+            ..clear_env()
+        };
         assert!(!is_headed_for(RuntimePlatform::MacOs, &env));
     }
 
     /// macOS with DISPLAY set but no SSH — still headed (DISPLAY is irrelevant on macOS).
     #[test]
     fn macos_display_set_no_ssh_is_headed() {
-        let env = EnvSnapshot { display: true, ..clear_env() };
+        let env = EnvSnapshot {
+            display: true,
+            ..clear_env()
+        };
         assert!(is_headed_for(RuntimePlatform::MacOs, &env));
     }
 
@@ -2777,19 +2907,29 @@ mod tests {
 
     #[test]
     fn linux_display_no_ssh_no_ci_is_headed() {
-        let env = EnvSnapshot { display: true, ..clear_env() };
+        let env = EnvSnapshot {
+            display: true,
+            ..clear_env()
+        };
         assert!(is_headed_for(RuntimePlatform::Linux, &env));
     }
 
     #[test]
     fn linux_wayland_no_ssh_no_ci_is_headed() {
-        let env = EnvSnapshot { wayland_display: true, ..clear_env() };
+        let env = EnvSnapshot {
+            wayland_display: true,
+            ..clear_env()
+        };
         assert!(is_headed_for(RuntimePlatform::Linux, &env));
     }
 
     #[test]
     fn linux_both_display_vars_no_ssh_no_ci_is_headed() {
-        let env = EnvSnapshot { display: true, wayland_display: true, ..clear_env() };
+        let env = EnvSnapshot {
+            display: true,
+            wayland_display: true,
+            ..clear_env()
+        };
         assert!(is_headed_for(RuntimePlatform::Linux, &env));
     }
 
@@ -2801,37 +2941,61 @@ mod tests {
 
     #[test]
     fn linux_display_ssh_connection_is_not_headed() {
-        let env = EnvSnapshot { display: true, ssh_connection: true, ..clear_env() };
+        let env = EnvSnapshot {
+            display: true,
+            ssh_connection: true,
+            ..clear_env()
+        };
         assert!(!is_headed_for(RuntimePlatform::Linux, &env));
     }
 
     #[test]
     fn linux_display_ssh_tty_is_not_headed() {
-        let env = EnvSnapshot { display: true, ssh_tty: true, ..clear_env() };
+        let env = EnvSnapshot {
+            display: true,
+            ssh_tty: true,
+            ..clear_env()
+        };
         assert!(!is_headed_for(RuntimePlatform::Linux, &env));
     }
 
     #[test]
     fn linux_display_ci_is_not_headed() {
-        let env = EnvSnapshot { display: true, ci: true, ..clear_env() };
+        let env = EnvSnapshot {
+            display: true,
+            ci: true,
+            ..clear_env()
+        };
         assert!(!is_headed_for(RuntimePlatform::Linux, &env));
     }
 
     #[test]
     fn linux_display_github_actions_is_not_headed() {
-        let env = EnvSnapshot { display: true, github_actions: true, ..clear_env() };
+        let env = EnvSnapshot {
+            display: true,
+            github_actions: true,
+            ..clear_env()
+        };
         assert!(!is_headed_for(RuntimePlatform::Linux, &env));
     }
 
     #[test]
     fn linux_wayland_ci_is_not_headed() {
-        let env = EnvSnapshot { wayland_display: true, ci: true, ..clear_env() };
+        let env = EnvSnapshot {
+            wayland_display: true,
+            ci: true,
+            ..clear_env()
+        };
         assert!(!is_headed_for(RuntimePlatform::Linux, &env));
     }
 
     #[test]
     fn linux_wayland_ssh_connection_is_not_headed() {
-        let env = EnvSnapshot { wayland_display: true, ssh_connection: true, ..clear_env() };
+        let env = EnvSnapshot {
+            wayland_display: true,
+            ssh_connection: true,
+            ..clear_env()
+        };
         assert!(!is_headed_for(RuntimePlatform::Linux, &env));
     }
 
@@ -2840,7 +3004,11 @@ mod tests {
     #[test]
     fn other_platform_always_not_headed() {
         // Even with a display set, unknown platforms return false.
-        let env = EnvSnapshot { display: true, wayland_display: true, ..clear_env() };
+        let env = EnvSnapshot {
+            display: true,
+            wayland_display: true,
+            ..clear_env()
+        };
         assert!(!is_headed_for(RuntimePlatform::Other, &env));
     }
 
@@ -2914,7 +3082,10 @@ mod tests {
     #[test]
     fn resolve_open_cmd_uses_override_when_provided() {
         assert_eq!(resolve_open_cmd(Some("my-browser")), "my-browser");
-        assert_eq!(resolve_open_cmd(Some("/usr/bin/xdg-open")), "/usr/bin/xdg-open");
+        assert_eq!(
+            resolve_open_cmd(Some("/usr/bin/xdg-open")),
+            "/usr/bin/xdg-open"
+        );
     }
 
     /// An empty string override is accepted as-is (callers decide whether to act on it).
@@ -2929,9 +3100,15 @@ mod tests {
     fn resolve_open_cmd_no_override_falls_back_to_platform_default() {
         let cmd = resolve_open_cmd(None);
         #[cfg(any(target_os = "macos", target_os = "linux"))]
-        assert!(!cmd.is_empty(), "platform default must be non-empty on macOS/Linux");
+        assert!(
+            !cmd.is_empty(),
+            "platform default must be non-empty on macOS/Linux"
+        );
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        assert!(cmd.is_empty(), "platform default must be empty on unsupported platforms");
+        assert!(
+            cmd.is_empty(),
+            "platform default must be empty on unsupported platforms"
+        );
     }
 
     // --- spawn_browser_open ---
