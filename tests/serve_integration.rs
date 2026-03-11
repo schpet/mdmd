@@ -997,10 +997,10 @@ fn test_serve_startup_stdout_format() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let lines: Vec<&str> = stdout.lines().collect();
 
-    // Must have at least one line: either local URL or tailscale URLs (1–2 lines).
+    // Must have exactly one line: either local URL or tailscale IP URL.
     assert!(
-        !lines.is_empty() && lines.len() <= 2,
-        "expected 1–2 startup lines, got {}\nstdout:\n{stdout}",
+        lines.len() == 1,
+        "expected exactly 1 startup line, got {}\nstdout:\n{stdout}",
         lines.len()
     );
 
@@ -2874,8 +2874,8 @@ fn test_verbose_startup_diagnostics_emitted() {
 ///   label prefixes.
 /// - stderr contains `[serve]` and `[bind]` diagnostic lines.
 /// - `[tailscale]` is visible: either as a `[tailscale] skipped` line on
-///   stderr (tailscale absent) or as a second URL line on stdout (tailscale
-///   present).
+///   stderr (tailscale absent) or as a tailscale IP URL line on stdout
+///   (tailscale present).
 ///
 /// `MDMD_OPEN_CMD` is set to a nonexistent binary so that any accidental
 /// browser-open attempt produces a `[browser]` failure line on stderr rather
@@ -2927,12 +2927,12 @@ fn test_verbose_url_stdout_and_startup_stderr_diagnostics() {
     );
 
     // Tailscale: either a [tailscale] skipped diagnostic on stderr (tailscale absent)
-    // or a second URL line on stdout (tailscale present and running).
+    // or a tailscale IP URL on stdout (tailscale present and running).
     let has_tailscale_stderr = stderr.contains("[tailscale]");
-    let has_tailscale_stdout = lines.len() >= 2;
+    let has_tailscale_stdout = lines.iter().any(|l| l.starts_with("http://100."));
     assert!(
         has_tailscale_stderr || has_tailscale_stdout,
-        "--verbose must report tailscale status: either [tailscale] on stderr or second URL on stdout\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "--verbose must report tailscale status: either [tailscale] on stderr or tailscale IP URL on stdout\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
 

@@ -1779,17 +1779,13 @@ pub async fn run_serve(
     );
 
     // Startup stdout: bare URL(s) only — no labels.
-    // When Tailscale is available: MagicDNS hostname then IP address.
+    // When Tailscale is available: IP address.
     // When Tailscale is absent: localhost fallback.
     let tailscale = tokio::task::spawn_blocking(move || tailscale_info(verbose))
         .await
         .ok()
         .flatten();
     if let Some(ref ts) = tailscale {
-        println!(
-            "http://{}:{bound_port}{}",
-            ts.dns_name, state.entry_url_path
-        );
         println!("http://{}:{bound_port}{}", ts.ip, state.entry_url_path);
     } else {
         println!("http://127.0.0.1:{bound_port}{}", state.entry_url_path);
@@ -2069,46 +2065,37 @@ mod tests {
         assert_eq!(line, "http://127.0.0.1:4321/README.md");
     }
 
-    /// When tailscale is present the startup URL block emits exactly two bare URL
-    /// lines: MagicDNS hostname first, then the Tailscale IP — no 127.0.0.1, no labels.
+    /// When tailscale is present the startup URL block emits exactly one bare URL
+    /// line: the Tailscale IP — no MagicDNS hostname, no 127.0.0.1, no labels.
     #[test]
-    fn startup_url_block_tailscale_dns_then_ip_when_tailscale_present() {
+    fn startup_url_block_tailscale_ip_when_tailscale_present() {
         let port: u16 = 8080;
         let path = "/guide.md";
-        let ts_dns = "myhost.ts.net";
         let ts_ip = "100.1.2.3";
 
-        let block: Vec<String> = vec![
-            format!("http://{ts_dns}:{port}{path}"),
-            format!("http://{ts_ip}:{port}{path}"),
-        ];
+        let block: Vec<String> = vec![format!("http://{ts_ip}:{port}{path}")];
 
         assert_eq!(
             block.len(),
-            2,
-            "expected exactly two URL lines when tailscale is present"
+            1,
+            "expected exactly one URL line when tailscale is present"
         );
         assert!(
-            block[0].starts_with("http://myhost.ts.net:"),
-            "first line must be tailscale MagicDNS URL, got: {:?}",
+            block[0].starts_with("http://100."),
+            "line must be tailscale IP URL, got: {:?}",
             block[0]
         );
         assert!(
-            block[1].starts_with("http://100."),
-            "second line must be tailscale IP URL, got: {:?}",
-            block[1]
+            !block[0].starts_with("http://127.0.0.1:"),
+            "must not emit localhost when tailscale is present, line: {:?}",
+            block[0]
         );
-        for line in &block {
+        for forbidden in &["url:", "index:", "mdmd serve", "root:", "entry:"] {
             assert!(
-                !line.starts_with("http://127.0.0.1:"),
-                "must not emit localhost when tailscale is present, line: {line:?}"
+                !block[0].starts_with(forbidden),
+                "startup URL block must not contain label {forbidden:?}, line: {:?}",
+                block[0]
             );
-            for forbidden in &["url:", "index:", "mdmd serve", "root:", "entry:"] {
-                assert!(
-                    !line.starts_with(forbidden),
-                    "startup URL block must not contain label {forbidden:?}, line: {line:?}"
-                );
-            }
         }
     }
 

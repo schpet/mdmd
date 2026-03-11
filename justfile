@@ -7,6 +7,7 @@ default:
 release bump:
     changelog release {{bump}}
     svbump write "$(changelog version latest)" package.version Cargo.toml
+    cargo generate-lockfile
     jj commit -m "chore: Release mdmd version $(changelog version latest)"
     jj bookmark set main -r @-
     jj tag set "v$(changelog version latest)" -r @-
