@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-10
+
+### Fixed
+
+- frontmatter detail/summary panels now collapsed by default
+- pre-existing test assertions for frontmatter null class and panel element type
+
+### Added
+
+- YAML frontmatter rendering with collapsible detail panels
+
 ## [0.2.5] - 2026-02-27
 
 ### Fixed
@@ -58,7 +69,8 @@
 
 ## [0.1.0] - 2026-02-25
 
-[Unreleased]: https://github.com/schpet/mdmd/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/schpet/mdmd/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/schpet/mdmd/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/schpet/mdmd/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/schpet/mdmd/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/schpet/mdmd/compare/v0.2.2...v0.2.3
