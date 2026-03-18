@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-03-18
+
 ### Fixed
 
 - release workflow now regenerates Cargo.lock to keep version in sync
@@ -77,7 +79,8 @@
 
 ## [0.1.0] - 2026-02-25
 
-[Unreleased]: https://github.com/schpet/mdmd/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/schpet/mdmd/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/schpet/mdmd/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/schpet/mdmd/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/schpet/mdmd/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/schpet/mdmd/compare/v0.2.3...v0.2.4
