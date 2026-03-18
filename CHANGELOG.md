@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- release workflow now regenerates Cargo.lock to keep version in sync
+
+### Changed
+
+- startup URL output now shows only the tailscale IP address instead of both MagicDNS hostname and IP
+
 ## [0.3.0] - 2026-03-10
 
 ### Fixed
