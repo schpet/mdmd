@@ -454,13 +454,13 @@ fn run(
                 // Outline modal is open — handle outline-specific keys
                 let num_headings = rendered.heading_lines.len();
                 match key.code {
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        if num_headings > 0 {
-                            ol.selected = (ol.selected + 1).min(num_headings - 1);
-                            scroll_offset = rendered.heading_lines[ol.selected]
-                                .rendered_line
-                                .min(max_scroll);
-                        }
+                    KeyCode::Char('j') | KeyCode::Down
+                        if num_headings > 0 =>
+                    {
+                        ol.selected = (ol.selected + 1).min(num_headings - 1);
+                        scroll_offset = rendered.heading_lines[ol.selected]
+                            .rendered_line
+                            .min(max_scroll);
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
                         ol.selected = ol.selected.saturating_sub(1);
@@ -474,13 +474,13 @@ fn run(
                             .rendered_line
                             .min(max_scroll);
                     }
-                    KeyCode::Char('G') | KeyCode::End => {
-                        if num_headings > 0 {
-                            ol.selected = num_headings - 1;
-                            scroll_offset = rendered.heading_lines[ol.selected]
-                                .rendered_line
-                                .min(max_scroll);
-                        }
+                    KeyCode::Char('G') | KeyCode::End
+                        if num_headings > 0 =>
+                    {
+                        ol.selected = num_headings - 1;
+                        scroll_offset = rendered.heading_lines[ol.selected]
+                            .rendered_line
+                            .min(max_scroll);
                     }
                     KeyCode::Enter => {
                         // Close and stay at selected heading position
@@ -553,19 +553,19 @@ fn run(
                     KeyCode::Char('q') => return Ok(()),
 
                     // Open outline modal
-                    KeyCode::Char('o') => {
-                        if !rendered.heading_lines.is_empty() {
-                            let current_idx = rendered
-                                .heading_lines
-                                .iter()
-                                .rposition(|h| h.rendered_line <= scroll_offset)
-                                .unwrap_or(0);
-                            outline = Some(OutlineState {
-                                selected: current_idx,
-                                saved_scroll: scroll_offset,
-                            });
-                            focused_link = None;
-                        }
+                    KeyCode::Char('o')
+                        if !rendered.heading_lines.is_empty() =>
+                    {
+                        let current_idx = rendered
+                            .heading_lines
+                            .iter()
+                            .rposition(|h| h.rendered_line <= scroll_offset)
+                            .unwrap_or(0);
+                        outline = Some(OutlineState {
+                            selected: current_idx,
+                            saved_scroll: scroll_offset,
+                        });
+                        focused_link = None;
                     }
 
                     // Single line down

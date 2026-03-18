@@ -44,14 +44,12 @@ macro_rules! vlog {
 /// Tailscale connection details for the local node.
 #[derive(Debug)]
 pub struct TailscaleInfo {
-    /// MagicDNS hostname (trailing `.` stripped), e.g. `myhost.ts.net`.
-    pub dns_name: String,
     /// First IPv4 address from `TailscaleIPs`, e.g. `100.x.x.x`.
     pub ip: String,
 }
 
-/// Parse raw bytes from `tailscale status --json` and extract `Self.DNSName`
-/// and the first IPv4 from `Self.TailscaleIPs`.
+/// Parse raw bytes from `tailscale status --json` and extract the first IPv4
+/// from `Self.TailscaleIPs`.
 ///
 /// Returns `Err(reason)` (a short lowercase slug) on any failure.
 pub fn parse_tailscale_info(output: &[u8]) -> Result<TailscaleInfo, String> {
@@ -59,16 +57,6 @@ pub fn parse_tailscale_info(output: &[u8]) -> Result<TailscaleInfo, String> {
         serde_json::from_slice(output).map_err(|e| format!("json-parse: {e}"))?;
 
     let self_obj = json.get("Self").ok_or_else(|| "no-Self".to_owned())?;
-
-    let dns_name = self_obj
-        .get("DNSName")
-        .and_then(|d| d.as_str())
-        .ok_or_else(|| "no-DNSName".to_owned())?;
-
-    let trimmed = dns_name.trim_end_matches('.');
-    if trimmed.is_empty() {
-        return Err("empty-DNSName".to_owned());
-    }
 
     let ips = self_obj
         .get("TailscaleIPs")
@@ -83,15 +71,8 @@ pub fn parse_tailscale_info(output: &[u8]) -> Result<TailscaleInfo, String> {
         .ok_or_else(|| "empty-TailscaleIPs".to_owned())?;
 
     Ok(TailscaleInfo {
-        dns_name: trimmed.to_owned(),
         ip: ip.to_owned(),
     })
-}
-
-/// Convenience wrapper: extract only the DNS name (used by existing tests).
-#[cfg(test)]
-pub fn parse_tailscale_dns_name(output: &[u8]) -> Result<String, String> {
-    parse_tailscale_info(output).map(|info| info.dns_name)
 }
 
 /// Attempt to obtain Tailscale info by running `tailscale status --json`.
@@ -1923,20 +1904,19 @@ mod tests {
         assert!(derive_entry_url_path(&entry, &root).is_err());
     }
 
-    // --- parse_tailscale_info / parse_tailscale_dns_name ---
+    // --- parse_tailscale_info ---
 
     #[test]
-    fn tailscale_info_parses_dns_and_ipv4() {
+    fn tailscale_info_parses_ipv4() {
         let json =
-            br#"{"Self":{"DNSName":"myhost.ts.net.","TailscaleIPs":["100.1.2.3","fd7a::1"]}}"#;
+            br#"{"Self":{"TailscaleIPs":["100.1.2.3","fd7a::1"]}}"#;
         let info = parse_tailscale_info(json).unwrap();
-        assert_eq!(info.dns_name, "myhost.ts.net");
         assert_eq!(info.ip, "100.1.2.3");
     }
 
     #[test]
     fn tailscale_info_falls_back_to_ipv6_when_no_ipv4() {
-        let json = br#"{"Self":{"DNSName":"myhost.ts.net.","TailscaleIPs":["fd7a::1"]}}"#;
+        let json = br#"{"Self":{"TailscaleIPs":["fd7a::1"]}}"#;
         let info = parse_tailscale_info(json).unwrap();
         assert_eq!(info.ip, "fd7a::1");
     }
@@ -1949,85 +1929,47 @@ mod tests {
     }
 
     #[test]
-    fn tailscale_valid_json_trims_trailing_dot() {
-        let json = br#"{"Self":{"DNSName":"hostname.ts.net.","TailscaleIPs":["100.1.2.3"]}}"#;
-        let result = parse_tailscale_dns_name(json).unwrap();
-        assert_eq!(result, "hostname.ts.net");
-    }
-
-    #[test]
-    fn tailscale_trailing_dot_only_is_empty_err() {
-        let json = br#"{"Self":{"DNSName":"."}}"#;
-        let err = parse_tailscale_dns_name(json).unwrap_err();
-        assert!(err.contains("empty-DNSName"), "got: {err}");
-    }
-
-    #[test]
     fn tailscale_empty_json_object_returns_err() {
         let json = b"{}";
-        assert!(parse_tailscale_dns_name(json).is_err());
+        assert!(parse_tailscale_info(json).is_err());
     }
 
     #[test]
     fn tailscale_missing_self_key_returns_err() {
-        let json = br#"{"Other":{"DNSName":"hostname.ts.net."}}"#;
-        let err = parse_tailscale_dns_name(json).unwrap_err();
+        let json = br#"{"Other":{"TailscaleIPs":["100.1.2.3"]}}"#;
+        let err = parse_tailscale_info(json).unwrap_err();
         assert!(err.contains("no-Self"), "got: {err}");
-    }
-
-    #[test]
-    fn tailscale_missing_dnsname_field_returns_err() {
-        let json = br#"{"Self":{"Status":"Running"}}"#;
-        let err = parse_tailscale_dns_name(json).unwrap_err();
-        assert!(err.contains("no-DNSName"), "got: {err}");
     }
 
     #[test]
     fn tailscale_malformed_json_returns_err() {
         let json = b"not valid json {{{";
-        let err = parse_tailscale_dns_name(json).unwrap_err();
+        let err = parse_tailscale_info(json).unwrap_err();
         assert!(err.contains("json-parse"), "got: {err}");
     }
 
     #[test]
     fn tailscale_empty_bytes_returns_err() {
         let json = b"";
-        let err = parse_tailscale_dns_name(json).unwrap_err();
+        let err = parse_tailscale_info(json).unwrap_err();
         assert!(err.contains("json-parse"), "got: {err}");
     }
 
     #[test]
     fn tailscale_subprocess_failure_returns_none() {
-        // Running a non-existent command should produce Err from output(),
-        // which tailscale_dns_name() converts to None without panicking.
         let result = std::process::Command::new("__tailscale_does_not_exist__")
             .args(["status", "--json"])
             .output();
-        // Verify the OS error is captured (not panicked); tailscale_dns_name()
-        // handles this same Err by returning None.
         assert!(result.is_err(), "expected command-not-found error");
     }
 
-    /// `tailscale_dns_name(false)` must complete without panicking on either
-    /// the subprocess-error branch or the success path.
-    ///
-    /// When the `tailscale` binary is absent the subprocess-error branch is
-    /// taken; `vlog!(false, ...)` is silently suppressed (no stderr output).
-    /// When `tailscale` is present the success path returns Some without any
-    /// diagnostic output.  Either outcome is acceptable.
     #[test]
-    fn tailscale_dns_name_verbose_false_does_not_panic() {
+    fn tailscale_info_verbose_false_does_not_panic() {
         let _ = tailscale_info(false);
     }
 
-    /// `tailscale_info(true)` must complete without panicking on either
-    /// the subprocess-error branch or the success path.
-    ///
-    /// When the `tailscale` binary is absent the subprocess-error branch emits
-    /// a `[tailscale] skipped` line via `vlog!(true, ...)` and the function
-    /// returns `None`.  Either outcome is acceptable; only no-panic is asserted.
     #[test]
-    fn tailscale_dns_name_verbose_true_does_not_panic() {
+    fn tailscale_info_verbose_true_does_not_panic() {
         let _ = tailscale_info(true);
     }
 

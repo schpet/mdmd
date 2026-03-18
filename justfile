@@ -5,6 +5,7 @@ default:
 
 # release a new version: `just release patch`, `just release minor`, `just release major`, or `just release 1.2.3`
 release bump:
+    cargo clippy -- -D warnings
     changelog release {{bump}}
     svbump write "$(changelog version latest)" package.version Cargo.toml
     cargo generate-lockfile
