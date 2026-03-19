@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- full-width toggle button in serve mode lets you remove the 860px content cap
+
 ## [0.3.1] - 2026-03-18
 
 ### Fixed

@@ -442,6 +442,34 @@ window.mdmd = window.mdmd || {};
 }());
 
 /* --------------------------------------------------------------------- *
+ * Full-width toggle button                                              *
+ * --------------------------------------------------------------------- */
+(function () {
+    'use strict';
+    var KEY = 'mdmd-full-width';
+    var CLS = 'full-width-on';
+    var btn = document.getElementById('fullwidth-toggle');
+    if (!btn) { return; }
+
+    /* Sync ARIA with current state (init script may have added the class). */
+    var isOn = document.documentElement.classList.contains(CLS);
+    btn.setAttribute('aria-pressed', isOn ? 'true' : 'false');
+
+    btn.addEventListener('click', function () {
+        var current = document.documentElement.classList.contains(CLS);
+        if (current) {
+            document.documentElement.classList.remove(CLS);
+            btn.setAttribute('aria-pressed', 'false');
+            try { localStorage.setItem(KEY, 'off'); } catch (_) {}
+        } else {
+            document.documentElement.classList.add(CLS);
+            btn.setAttribute('aria-pressed', 'true');
+            try { localStorage.setItem(KEY, 'on'); } catch (_) {}
+        }
+    });
+}());
+
+/* --------------------------------------------------------------------- *
  * File-change detection: poll /_mdmd/freshness and reveal notice div   *
  * when the server-side mtime changes (bd-38z).                         *
  * --------------------------------------------------------------------- */

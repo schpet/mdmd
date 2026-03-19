@@ -550,7 +550,8 @@ body {
 /* ---- Theme toggle button / Indentation toggle button ---- */
 
 .theme-toggle,
-.indent-toggle {
+.indent-toggle,
+.fullwidth-toggle {
     position: fixed;
     top: 0.75rem;
     background: var(--color-surface);
@@ -576,8 +577,13 @@ body {
     right: calc(0.75rem + 36px + 0.5rem);
 }
 
+.fullwidth-toggle {
+    right: calc(0.75rem + 2 * (36px + 0.5rem));
+}
+
 .theme-toggle:hover,
-.indent-toggle:hover {
+.indent-toggle:hover,
+.fullwidth-toggle:hover {
     color: var(--color-text);
     background: var(--color-bg);
 }
@@ -592,6 +598,12 @@ body {
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) .icon-sun  { display: block; }
     :root:not([data-theme="light"]) .icon-moon { display: none; }
+}
+
+/* ---- Full-width mode ---- */
+
+:root.full-width-on .content {
+    max-width: none;
 }
 
 /* ---- Responsive: hide TOC on narrow screens ---- */
