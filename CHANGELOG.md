@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- headings subcommand lists all headings in a markdown file with index numbers and indentation
+- select subcommand prints a section of raw markdown by heading name or index
+
 ## [0.4.0] - 2026-03-19
 
 ### Added

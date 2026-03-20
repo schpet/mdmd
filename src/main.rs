@@ -88,6 +88,32 @@ enum Commands {
         #[arg(long, short = 'v')]
         verbose: bool,
     },
+    /// List all headings in a markdown file
+    Headings {
+        /// Path to the markdown file
+        file: String,
+        /// Only show headings up to this level (1-6)
+        #[arg(long)]
+        max_level: Option<u8>,
+    },
+    /// Print a section of a markdown file as raw markdown
+    ///
+    /// Selects a heading and prints everything from that heading up to (but not
+    /// including) the next heading of the same or higher level.
+    ///
+    /// By default, matches headings by case-insensitive substring. If the match
+    /// is ambiguous (multiple headings match), an error is shown with the
+    /// matches listed — use --index to disambiguate.
+    Select {
+        /// Path to the markdown file
+        file: String,
+        /// Heading text to match (case-insensitive substring)
+        #[arg(group = "selector")]
+        heading: Option<String>,
+        /// Select heading by index (1-based, as shown by `mdmd headings`)
+        #[arg(long, group = "selector")]
+        index: Option<usize>,
+    },
 }
 
 /// Full CLI with explicit subcommands.
@@ -125,6 +151,15 @@ enum DispatchMode {
         port: u16,
         no_open: bool,
         verbose: bool,
+    },
+    Headings {
+        file: String,
+        max_level: Option<u8>,
+    },
+    Select {
+        file: String,
+        heading: Option<String>,
+        index: Option<usize>,
     },
 }
 
@@ -303,6 +338,18 @@ fn resolve_dispatch_mode() -> DispatchMode {
                 no_open,
                 verbose,
             },
+            Commands::Headings { file, max_level } => {
+                DispatchMode::Headings { file, max_level }
+            }
+            Commands::Select {
+                file,
+                heading,
+                index,
+            } => DispatchMode::Select {
+                file,
+                heading,
+                index,
+            },
         },
         Err(clap_err) => {
             // Pass --help, --version, and subcommand-level help through to the full Cli handler.
@@ -342,13 +389,19 @@ fn main() -> io::Result<()> {
                 .map_err(io::Error::other)?;
             rt.block_on(serve::run_serve(file, bind, port, no_open, verbose))
         }
+        DispatchMode::Headings { file, max_level } => run_headings(&file, max_level),
+        DispatchMode::Select {
+            file,
+            heading,
+            index,
+        } => run_select(&file, heading.as_deref(), index),
     }
 }
 
-fn run_tui_file(file_arg: &str) -> io::Result<()> {
+/// Read a markdown file, validating its extension and handling errors.
+fn read_markdown_file(file_arg: &str) -> String {
     let path = Path::new(file_arg);
 
-    // Check the file extension before attempting to read.
     match path.extension().and_then(|e| e.to_str()) {
         Some("md" | "markdown" | "mdx" | "mdown" | "mkd" | "mkdn") => {}
         Some(ext) => {
@@ -363,7 +416,7 @@ fn run_tui_file(file_arg: &str) -> io::Result<()> {
         }
     }
 
-    let source = fs::read_to_string(path).unwrap_or_else(|e| {
+    fs::read_to_string(path).unwrap_or_else(|e| {
         match e.kind() {
             io::ErrorKind::NotFound => {
                 eprintln!("Error: file not found: {file_arg}");
@@ -376,7 +429,112 @@ fn run_tui_file(file_arg: &str) -> io::Result<()> {
             }
         }
         process::exit(1);
-    });
+    })
+}
+
+fn run_headings(file_arg: &str, max_level: Option<u8>) -> io::Result<()> {
+    let source = read_markdown_file(file_arg);
+    let doc = parse::parse(&source);
+
+    if doc.headings.is_empty() {
+        eprintln!("No headings found in {file_arg}");
+        return Ok(());
+    }
+
+    let max = max_level.unwrap_or(6);
+    for (i, h) in doc.headings.iter().enumerate() {
+        if h.level > max {
+            continue;
+        }
+        let indent = "  ".repeat((h.level as usize).saturating_sub(1));
+        let prefix = "#".repeat(h.level as usize);
+        println!("{:>3}  {indent}{prefix} {}", i + 1, h.text);
+    }
+
+    Ok(())
+}
+
+fn run_select(file_arg: &str, heading: Option<&str>, index: Option<usize>) -> io::Result<()> {
+    let source = read_markdown_file(file_arg);
+    let doc = parse::parse(&source);
+
+    if doc.headings.is_empty() {
+        eprintln!("No headings found in {file_arg}");
+        process::exit(1);
+    }
+
+    let selected_idx = if let Some(idx) = index {
+        if idx == 0 || idx > doc.headings.len() {
+            eprintln!(
+                "Error: index {idx} out of range (1-{})",
+                doc.headings.len()
+            );
+            process::exit(1);
+        }
+        idx - 1
+    } else if let Some(query) = heading {
+        let query_lower = query.to_lowercase();
+        let matches: Vec<usize> = doc
+            .headings
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.text.to_lowercase().contains(&query_lower))
+            .map(|(i, _)| i)
+            .collect();
+
+        match matches.len() {
+            0 => {
+                eprintln!("Error: no heading matching \"{query}\"");
+                process::exit(1);
+            }
+            1 => matches[0],
+            _ => {
+                eprintln!("Error: \"{query}\" matches multiple headings:");
+                for &i in &matches {
+                    let h = &doc.headings[i];
+                    let prefix = "#".repeat(h.level as usize);
+                    eprintln!("  {:>3}  {prefix} {}", i + 1, h.text);
+                }
+                eprintln!("\nUse --index to select a specific heading.");
+                process::exit(1);
+            }
+        }
+    } else {
+        eprintln!("Error: provide a heading name or --index");
+        process::exit(1);
+    };
+
+    let selected = &doc.headings[selected_idx];
+    let lines: Vec<&str> = source.lines().collect();
+
+    // Start line is 1-based, convert to 0-based index.
+    let start = selected.line - 1;
+
+    // End: next heading of same or higher level (lower number), or EOF.
+    let end = doc
+        .headings
+        .iter()
+        .skip(selected_idx + 1)
+        .find(|h| h.level <= selected.level)
+        .map(|h| h.line - 1) // 0-based, exclusive
+        .unwrap_or(lines.len());
+
+    // Trim trailing blank lines.
+    let mut end = end;
+    while end > start && lines[end - 1].is_empty() {
+        end -= 1;
+    }
+
+    for line in &lines[start..end] {
+        println!("{line}");
+    }
+
+    Ok(())
+}
+
+fn run_tui_file(file_arg: &str) -> io::Result<()> {
+    let source = read_markdown_file(file_arg);
+    let path = Path::new(file_arg);
     let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
     ratatui::run(|terminal| run(terminal, &canonical, source))
