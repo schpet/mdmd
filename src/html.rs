@@ -636,6 +636,8 @@ if(s==='on')document.documentElement.classList.add('indent-hierarchy-on');\
     const ICON_INDENT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><line x1="2" y1="4" x2="14" y2="4"/><line x1="5" y1="8" x2="14" y2="8"/><line x1="8" y1="12" x2="14" y2="12"/></svg>"#;
     // SVG icon for full-width toggle: arrows pointing outward from center.
     const ICON_FULLWIDTH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>"#;
+    // SVG icon for raw/source view: code brackets </>.
+    const ICON_RAW: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>"#;
 
     format!(
         "<!DOCTYPE html>\n\
@@ -655,6 +657,7 @@ if(s==='on')document.documentElement.classList.add('indent-hierarchy-on');\
 <button id=\"theme-toggle\" class=\"theme-toggle\" aria-label=\"Toggle dark mode\">{ICON_MOON}{ICON_SUN}</button>\n\
 <button id=\"indent-toggle\" class=\"indent-toggle\" aria-label=\"Toggle indentation hierarchy\" aria-pressed=\"false\">{ICON_INDENT}</button>\n\
 <button id=\"fullwidth-toggle\" class=\"fullwidth-toggle\" aria-label=\"Toggle full width\" aria-pressed=\"false\">{ICON_FULLWIDTH}</button>\n\
+<a href=\"?raw=1\" class=\"raw-source-link\" aria-label=\"View raw markdown\" target=\"_blank\">{ICON_RAW}</a>\n\
 <div id=\"mdmd-change-notice\" class=\"change-notice\" hidden>\n\
 This file has changed on disk.\n\
 <button class=\"change-notice-reload\" onclick=\"location.reload()\">Load latest</button>\n\
