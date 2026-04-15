@@ -1,6 +1,7 @@
 mod backlinks;
 mod frontmatter;
 mod html;
+mod html_export;
 mod parse;
 mod render;
 mod serve;
@@ -88,6 +89,14 @@ enum Commands {
         #[arg(long, short = 'v')]
         verbose: bool,
     },
+    /// Export a markdown file as a self-contained HTML page
+    Html {
+        /// Path to the markdown file
+        file: String,
+        /// Output file path (defaults to <input-stem>.html)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
     /// List all headings in a markdown file
     Headings {
         /// Path to the markdown file
@@ -151,6 +160,10 @@ enum DispatchMode {
         port: u16,
         no_open: bool,
         verbose: bool,
+    },
+    Html {
+        file: String,
+        output: Option<String>,
     },
     Headings {
         file: String,
@@ -338,6 +351,7 @@ fn resolve_dispatch_mode() -> DispatchMode {
                 no_open,
                 verbose,
             },
+            Commands::Html { file, output } => DispatchMode::Html { file, output },
             Commands::Headings { file, max_level } => {
                 DispatchMode::Headings { file, max_level }
             }
@@ -388,6 +402,9 @@ fn main() -> io::Result<()> {
                 .build()
                 .map_err(io::Error::other)?;
             rt.block_on(serve::run_serve(file, bind, port, no_open, verbose))
+        }
+        DispatchMode::Html { file, output } => {
+            html_export::run_html(&file, output.as_deref())
         }
         DispatchMode::Headings { file, max_level } => run_headings(&file, max_level),
         DispatchMode::Select {

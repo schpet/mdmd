@@ -22,6 +22,19 @@ use comrak::{
 // Public types
 // ---------------------------------------------------------------------------
 
+/// Controls rendering behavior for different output targets.
+///
+/// `Serve` produces HTML suited for the mdmd HTTP server (external asset refs,
+/// root-relative link rewriting, serve-only UI controls).
+///
+/// `Html` produces a self-contained HTML file for opening from disk (inlined
+/// assets, original relative links preserved, no serve-only controls).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderTarget {
+    Serve,
+    Html,
+}
+
 /// A heading extracted from the document for TOC construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadingEntry {
@@ -456,17 +469,17 @@ fn rewrite_local_links<'a>(
 ///   and logging).
 /// - `serve_root`: canonicalized root directory of the serve tree. Local
 ///   relative links are rewritten to root-relative hrefs using this value.
+///   Ignored when `target` is [`RenderTarget::Html`].
+/// - `target`: controls link rewriting behavior.
 ///
 /// # Returns
 /// `(html, headings)` where `html` is the full HTML string and `headings` is
 /// the ordered list of [`HeadingEntry`] values for TOC construction.
-///
-/// Logs `[render] path=<file> headings=<count>` and
-/// `[rewrite] file=<path> rewritten=<N> skipped=<M>` at info/debug level.
 pub fn render_markdown(
     input: &str,
     file_path: &Path,
     serve_root: &Path,
+    target: RenderTarget,
     verbose: bool,
 ) -> (String, Vec<HeadingEntry>) {
     let arena = Arena::new();
@@ -484,14 +497,17 @@ pub fn render_markdown(
     }
 
     // --- Rewrite local relative links to root-relative hrefs (bd-1p6) ---
-    let (rewritten, skipped) = rewrite_local_links(root, file_path, serve_root);
-    if verbose {
-        eprintln!(
-            "[rewrite] file={} rewritten={} skipped={}",
-            file_path.display(),
-            rewritten,
-            skipped
-        );
+    // Only for Serve mode; Html preserves authored relative URLs.
+    if target == RenderTarget::Serve {
+        let (rewritten, skipped) = rewrite_local_links(root, file_path, serve_root);
+        if verbose {
+            eprintln!(
+                "[rewrite] file={} rewritten={} skipped={}",
+                file_path.display(),
+                rewritten,
+                skipped
+            );
+        }
     }
 
     // --- Extract headings with per-document slug deduplication (R4) ---
@@ -554,15 +570,17 @@ pub fn render_markdown(
 ///   relative display path shown in the header).
 /// - `ctx`: per-page metadata including backlinks, mtime, and URL path.
 ///   Pass `&PageShellContext { backlinks: &[], .. }` for pages without backlinks.
+/// - `target`: controls asset inlining and serve-only UI inclusion.
 ///
 /// # Returns
-/// A complete `text/html` document ready to send to the browser.
+/// A complete `text/html` document ready to send to the browser (or disk).
 pub fn build_page_shell(
     body_html: &str,
     headings: &[HeadingEntry],
     file_path: &Path,
     _serve_root: &Path,
     ctx: &PageShellContext,
+    target: RenderTarget,
 ) -> String {
     // Page title precedence: frontmatter title, then first H1, then file stem.
     let title_raw = ctx
@@ -584,16 +602,6 @@ pub fn build_page_shell(
     let toc_html = build_toc_html(headings);
     let backlinks_html = build_backlinks_html(ctx.backlinks);
 
-    // Emit freshness meta tags when mtime / url path are available (bd-38z).
-    let mtime_meta = match ctx.file_mtime_secs {
-        Some(secs) => format!("<meta name=\"mdmd-mtime\" content=\"{secs}\">\n"),
-        None => String::new(),
-    };
-    let path_meta = match ctx.page_url_path {
-        Some(p) => format!("<meta name=\"mdmd-path\" content=\"{}\">\n", html_escape(p)),
-        None => String::new(),
-    };
-
     // Mermaid is loaded unconditionally to keep shell logic simple.
     // Version is pinned (not @latest) for reproducibility and to avoid silent
     // breakage from upstream CDN updates.
@@ -608,7 +616,6 @@ if(dark)document.documentElement.setAttribute('data-theme','dark');\
 }());</script>";
 
     // Inline FOUC-prevention script for full-width state.
-    // Storage key: mdmd-full-width; legal values: on | off.
     const FULLWIDTH_INIT_SCRIPT: &str = "\
 <script>(function(){\
 try{\
@@ -618,9 +625,6 @@ if(s==='on')document.documentElement.classList.add('full-width-on');\
 }());</script>";
 
     // Inline FOUC-prevention script for indentation hierarchy state.
-    // Storage key: mdmd-indent-hierarchy; legal values: on | off.
-    // Unknown/missing values normalize to off (class absent).
-    // Runs before stylesheet so CSS can key off .indent-hierarchy-on from first paint.
     const INDENT_INIT_SCRIPT: &str = "\
 <script>(function(){\
 try{\
@@ -632,12 +636,59 @@ if(s==='on')document.documentElement.classList.add('indent-hierarchy-on');\
     // SVG icons for the theme toggle button.
     const ICON_MOON: &str = r#"<svg class="icon-moon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>"#;
     const ICON_SUN: &str = r#"<svg class="icon-sun" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>"#;
-    // SVG icon for the indentation hierarchy toggle: three lines at descending indent levels.
     const ICON_INDENT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><line x1="2" y1="4" x2="14" y2="4"/><line x1="5" y1="8" x2="14" y2="8"/><line x1="8" y1="12" x2="14" y2="12"/></svg>"#;
-    // SVG icon for full-width toggle: arrows pointing outward from center.
     const ICON_FULLWIDTH: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>"#;
-    // SVG icon for raw/source view: code brackets </>.
     const ICON_RAW: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>"#;
+
+    // --- Target-conditional sections ---
+
+    let title_suffix = match target {
+        RenderTarget::Serve => "mdmd serve",
+        RenderTarget::Html => "mdmd",
+    };
+
+    // Freshness meta tags: serve-only (used by JS polling).
+    let mtime_meta = match (target, ctx.file_mtime_secs) {
+        (RenderTarget::Serve, Some(secs)) => {
+            format!("<meta name=\"mdmd-mtime\" content=\"{secs}\">\n")
+        }
+        _ => String::new(),
+    };
+    let path_meta = match (target, ctx.page_url_path) {
+        (RenderTarget::Serve, Some(p)) => {
+            format!("<meta name=\"mdmd-path\" content=\"{}\">\n", html_escape(p))
+        }
+        _ => String::new(),
+    };
+
+    // CSS: linked for serve, inlined for html.
+    let css_fragment = match target {
+        RenderTarget::Serve => "<link rel=\"stylesheet\" href=\"/assets/mdmd.css\">".to_owned(),
+        RenderTarget::Html => format!("<style>\n{}\n</style>", crate::web_assets::CSS),
+    };
+
+    // Serve-only controls: raw source link, change notice.
+    let raw_link_html = match target {
+        RenderTarget::Serve => format!(
+            "<a href=\"?raw=1\" class=\"raw-source-link\" aria-label=\"View raw markdown\" target=\"_blank\">{ICON_RAW}</a>\n"
+        ),
+        RenderTarget::Html => String::new(),
+    };
+    let change_notice_html = match target {
+        RenderTarget::Serve => "\
+<div id=\"mdmd-change-notice\" class=\"change-notice\" hidden>\n\
+This file has changed on disk.\n\
+<button class=\"change-notice-reload\" onclick=\"location.reload()\">Load latest</button>\n\
+</div>\n"
+            .to_owned(),
+        RenderTarget::Html => String::new(),
+    };
+
+    // JS: external for serve, inlined for html.
+    let js_fragment = match target {
+        RenderTarget::Serve => format!("<script src=\"/assets/mdmd.js\"></script>"),
+        RenderTarget::Html => format!("<script>\n{}\n</script>", crate::web_assets::JS),
+    };
 
     format!(
         "<!DOCTYPE html>\n\
@@ -645,23 +696,20 @@ if(s==='on')document.documentElement.classList.add('indent-hierarchy-on');\
 <head>\n\
 <meta charset=\"utf-8\">\n\
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-<title>{title} · mdmd serve</title>\n\
+<title>{title} · {title_suffix}</title>\n\
 {mtime_meta}\
 {path_meta}\
 {THEME_INIT_SCRIPT}\n\
 {INDENT_INIT_SCRIPT}\n\
 {FULLWIDTH_INIT_SCRIPT}\n\
-<link rel=\"stylesheet\" href=\"/assets/mdmd.css\">\n\
+{css_fragment}\n\
 </head>\n\
 <body>\n\
 <button id=\"theme-toggle\" class=\"theme-toggle\" aria-label=\"Toggle dark mode\">{ICON_MOON}{ICON_SUN}</button>\n\
 <button id=\"indent-toggle\" class=\"indent-toggle\" aria-label=\"Toggle indentation hierarchy\" aria-pressed=\"false\">{ICON_INDENT}</button>\n\
 <button id=\"fullwidth-toggle\" class=\"fullwidth-toggle\" aria-label=\"Toggle full width\" aria-pressed=\"false\">{ICON_FULLWIDTH}</button>\n\
-<a href=\"?raw=1\" class=\"raw-source-link\" aria-label=\"View raw markdown\" target=\"_blank\">{ICON_RAW}</a>\n\
-<div id=\"mdmd-change-notice\" class=\"change-notice\" hidden>\n\
-This file has changed on disk.\n\
-<button class=\"change-notice-reload\" onclick=\"location.reload()\">Load latest</button>\n\
-</div>\n\
+{raw_link_html}\
+{change_notice_html}\
 <div class=\"layout\">\n\
 <nav class=\"toc-sidebar\">\n\
 {toc_html}</nav>\n\
@@ -671,7 +719,7 @@ This file has changed on disk.\n\
 {backlinks_html}</main>\n\
 </div>\n\
 <script src=\"{MERMAID_CDN_URL}\"></script>\n\
-<script src=\"/assets/mdmd.js\"></script>\n\
+{js_fragment}\n\
 </body>\n\
 </html>\n"
     )
@@ -727,9 +775,26 @@ fn build_backlinks_html(backlinks: &[BacklinkRef]) -> String {
 mod tests {
     use super::*;
 
-    /// Convenience wrapper: render with dummy paths.
+    /// Convenience wrapper: build page shell with Serve target.
+    fn shell(
+        body_html: &str,
+        headings: &[HeadingEntry],
+        file_path: &Path,
+        serve_root: &Path,
+        ctx: &PageShellContext,
+    ) -> String {
+        build_page_shell(body_html, headings, file_path, serve_root, ctx, RenderTarget::Serve)
+    }
+
+    /// Convenience wrapper: render with dummy paths (Serve target for backward compat).
     fn render(input: &str) -> (String, Vec<HeadingEntry>) {
-        render_markdown(input, Path::new("test.md"), Path::new("."), false)
+        render_markdown(
+            input,
+            Path::new("test.md"),
+            Path::new("."),
+            RenderTarget::Serve,
+            false,
+        )
     }
 
     // --- Phase-1 markdown feature matrix ---
@@ -960,7 +1025,7 @@ mod tests {
     fn page_shell_contains_nav_with_toc() {
         let input = "# Title\n\n## Section\n";
         let (html_body, headings) = render(input);
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/root/doc.md"),
@@ -983,7 +1048,7 @@ mod tests {
     #[test]
     fn page_shell_contains_script_tag() {
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/f.md"),
@@ -1004,7 +1069,7 @@ mod tests {
     #[test]
     fn page_shell_contains_pinned_mermaid_cdn_script() {
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/f.md"),
@@ -1027,7 +1092,7 @@ mod tests {
     #[test]
     fn page_shell_contains_css_link() {
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/f.md"),
@@ -1049,7 +1114,7 @@ mod tests {
     fn page_shell_heading_ids_injected() {
         let input = "# Title\n\n## Sub\n";
         let (html_body, headings) = render(input);
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/f.md"),
@@ -1102,7 +1167,7 @@ mod tests {
     fn render_abs(input: &str, serve_root: &str, file_rel: &str) -> String {
         let root = Path::new(serve_root);
         let file = root.join(file_rel);
-        let (html, _) = render_markdown(input, &file, root, false);
+        let (html, _) = render_markdown(input, &file, root, RenderTarget::Serve, false);
         html
     }
 
@@ -1428,7 +1493,7 @@ mod tests {
             },
         ];
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/f.md"),
@@ -1475,7 +1540,7 @@ mod tests {
     #[test]
     fn backlinks_panel_empty() {
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/f.md"),
@@ -1504,7 +1569,7 @@ mod tests {
     #[test]
     fn change_notice_present_and_hidden() {
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/f.md"),
@@ -1541,7 +1606,7 @@ mod tests {
             file_mtime_secs: Some(12345),
             page_url_path: Some("docs/test.md"),
         };
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/docs/test.md"),
@@ -1572,7 +1637,7 @@ mod tests {
             file_mtime_secs: None,
             page_url_path: None,
         };
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/f.md"),
@@ -1595,7 +1660,7 @@ mod tests {
             target_fragment: None,
         }];
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/f.md"),
@@ -1623,7 +1688,7 @@ mod tests {
             target_fragment: None,
         }];
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/f.md"),
@@ -1652,7 +1717,7 @@ mod tests {
             target_fragment: None,
         }];
         let (html_body, headings) = render("# Hi\n");
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/f.md"),
@@ -1708,7 +1773,7 @@ mod tests {
             Some("Frontmatter title"),
         );
 
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/doc.md"),
@@ -1736,7 +1801,7 @@ mod tests {
             None,
         );
 
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/doc.md"),
@@ -1757,7 +1822,7 @@ mod tests {
         eprintln!("scenario: file stem title fallback");
         let (html_body, headings) = render("body only\n");
 
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/fallback-name.md"),
@@ -1788,7 +1853,7 @@ mod tests {
             target_fragment: None,
         }];
 
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/doc.md"),
@@ -1919,7 +1984,7 @@ mod tests {
         eprintln!("scenario: non frontmatter shell");
         let (html_body, headings) = render("# Existing title\n\nbody\n");
 
-        let page = build_page_shell(
+        let page = shell(
             &html_body,
             &headings,
             Path::new("/r/existing.md"),
@@ -1935,5 +2000,217 @@ mod tests {
         assert!(page.contains("<title>Existing title · mdmd serve</title>"));
         assert!(!page.contains("frontmatter-panel"));
         assert!(page.contains("<h1 id=\"existing-title\">Existing title</h1>"));
+    }
+
+    // --- RenderTarget::Html tests ---
+
+    /// Build page shell with Html target.
+    fn shell_html(
+        body_html: &str,
+        headings: &[HeadingEntry],
+        file_path: &Path,
+        serve_root: &Path,
+        ctx: &PageShellContext,
+    ) -> String {
+        build_page_shell(body_html, headings, file_path, serve_root, ctx, RenderTarget::Html)
+    }
+
+    #[test]
+    fn html_target_inlines_css() {
+        let (body, headings) = render("# Hello\n");
+        let page = shell_html(
+            &body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
+        assert!(page.contains("<style>"), "CSS should be inlined");
+        assert!(
+            !page.contains("href=\"/assets/mdmd.css\""),
+            "should not link to external CSS"
+        );
+    }
+
+    #[test]
+    fn html_target_inlines_js() {
+        let (body, headings) = render("# Hello\n");
+        let page = shell_html(
+            &body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
+        assert!(
+            page.contains("<script>\n/* mdmd.js"),
+            "JS should be inlined"
+        );
+        assert!(
+            !page.contains("src=\"/assets/mdmd.js\""),
+            "should not link to external JS"
+        );
+    }
+
+    #[test]
+    fn html_target_keeps_mermaid_cdn() {
+        let (body, headings) = render("# Hello\n");
+        let page = shell_html(
+            &body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
+        assert!(
+            page.contains("mermaid@10.9.3"),
+            "Mermaid CDN script should still be present"
+        );
+    }
+
+    #[test]
+    fn html_target_no_raw_source_link() {
+        let (body, headings) = render("# Hello\n");
+        let page = shell_html(
+            &body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
+        assert!(
+            !page.contains("href=\"?raw=1\""),
+            "raw source link should be absent"
+        );
+    }
+
+    #[test]
+    fn html_target_no_change_notice() {
+        let (body, headings) = render("# Hello\n");
+        let page = shell_html(
+            &body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
+        assert!(
+            !page.contains("id=\"mdmd-change-notice\""),
+            "change notice should be absent"
+        );
+    }
+
+    #[test]
+    fn html_target_no_mtime_meta() {
+        let (body, headings) = render("# Hello\n");
+        let page = shell_html(
+            &body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: Some(1234567890),
+                page_url_path: Some("/f.md"),
+            },
+        );
+        assert!(
+            !page.contains("<meta name=\"mdmd-mtime\""),
+            "mtime meta should be suppressed for Html target"
+        );
+        assert!(
+            !page.contains("<meta name=\"mdmd-path\""),
+            "path meta should be suppressed for Html target"
+        );
+    }
+
+    #[test]
+    fn html_target_title_suffix() {
+        let (body, headings) = render("# Hello\n");
+        let page = shell_html(
+            &body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+            },
+        );
+        assert!(
+            page.contains("· mdmd</title>"),
+            "title suffix should be '· mdmd' not '· mdmd serve'"
+        );
+        assert!(
+            !page.contains("· mdmd serve</title>"),
+            "serve suffix should be absent"
+        );
+    }
+
+    #[test]
+    fn html_target_preserves_relative_links() {
+        let input = "[other](./other.md)\n";
+        let root = Path::new("/srv");
+        let file = root.join("docs/page.md");
+        let (html, _) =
+            render_markdown(input, &file, root, RenderTarget::Html, false);
+        assert!(
+            html.contains("href=\"./other.md\""),
+            "relative link should be preserved, got: {html}"
+        );
+    }
+
+    #[test]
+    fn serve_target_rewrites_relative_links() {
+        let input = "[other](./other.md)\n";
+        let root = Path::new("/srv");
+        let file = root.join("docs/page.md");
+        let (html, _) =
+            render_markdown(input, &file, root, RenderTarget::Serve, false);
+        assert!(
+            html.contains("href=\"/docs/other.md\""),
+            "relative link should be rewritten to root-relative, got: {html}"
+        );
+    }
+
+    #[test]
+    fn html_target_preserves_relative_image_src() {
+        let input = "![pic](./images/fig.png)\n";
+        let root = Path::new("/srv");
+        let file = root.join("page.md");
+        let (html, _) =
+            render_markdown(input, &file, root, RenderTarget::Html, false);
+        assert!(
+            html.contains("src=\"./images/fig.png\""),
+            "image src should be preserved, got: {html}"
+        );
     }
 }

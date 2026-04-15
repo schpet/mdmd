@@ -1348,6 +1348,7 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
             extracted.render_body.as_ref(),
             &canonical,
             &state.canonical_root,
+            html::RenderTarget::Serve,
             state.verbose,
         );
         let key = crate::backlinks::url_key_from_rel_path(&norm_display);
@@ -1372,6 +1373,7 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
             &canonical,
             &state.canonical_root,
             &shell_ctx,
+            html::RenderTarget::Serve,
         );
 
         let etag = compute_etag(page.as_bytes());
