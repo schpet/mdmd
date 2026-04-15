@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-04-15
+
+### Added
+
+- html export defaults to full-width layout; use `--constrained` for narrow content width
+
 ## [0.6.0] - 2026-04-15
 
 ### Added
@@ -98,7 +104,8 @@
 
 ## [0.1.0] - 2026-02-25
 
-[Unreleased]: https://github.com/schpet/mdmd/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/schpet/mdmd/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/schpet/mdmd/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/schpet/mdmd/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/schpet/mdmd/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/schpet/mdmd/compare/v0.3.1...v0.4.0
