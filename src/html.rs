@@ -71,6 +71,10 @@ pub struct PageShellContext<'a> {
     /// emit a `<meta>` tag for the JS freshness check (bd-38z).  `None` omits
     /// the tag.
     pub page_url_path: Option<&'a str>,
+    /// Whether to apply full-width mode (`full-width-on` class on `<html>`).
+    /// In serve mode this is controlled by localStorage; for html export this
+    /// bakes the choice into the document. `false` = constrained width.
+    pub full_width: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -690,9 +694,11 @@ This file has changed on disk.\n\
         RenderTarget::Html => format!("<script>\n{}\n</script>", crate::web_assets::JS),
     };
 
+    let html_class = if ctx.full_width { " class=\"full-width-on\"" } else { "" };
+
     format!(
         "<!DOCTYPE html>\n\
-<html lang=\"en\">\n\
+<html lang=\"en\"{html_class}>\n\
 <head>\n\
 <meta charset=\"utf-8\">\n\
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
@@ -1035,6 +1041,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         assert!(
@@ -1058,6 +1065,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         assert!(
@@ -1079,6 +1087,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         assert!(
@@ -1102,6 +1111,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         assert!(
@@ -1124,6 +1134,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         assert!(
@@ -1503,6 +1514,7 @@ mod tests {
                 backlinks: &bls,
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         // Header label with count (2 backlink refs supplied)
@@ -1550,6 +1562,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         assert!(
@@ -1579,6 +1592,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         assert!(
@@ -1605,6 +1619,7 @@ mod tests {
             backlinks: &[],
             file_mtime_secs: Some(12345),
             page_url_path: Some("docs/test.md"),
+        full_width: false,
         };
         let page = shell(
             &html_body,
@@ -1636,6 +1651,7 @@ mod tests {
             backlinks: &[],
             file_mtime_secs: None,
             page_url_path: None,
+        full_width: false,
         };
         let page = shell(
             &html_body,
@@ -1670,6 +1686,7 @@ mod tests {
                 backlinks: &bls,
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         assert!(
@@ -1698,6 +1715,7 @@ mod tests {
                 backlinks: &bls,
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         assert!(
@@ -1727,6 +1745,7 @@ mod tests {
                 backlinks: &bls,
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         // source_display: <script>xss</script> → &lt;script&gt;xss&lt;/script&gt;
@@ -1783,6 +1802,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
 
@@ -1811,6 +1831,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
 
@@ -1832,6 +1853,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
 
@@ -1863,6 +1885,7 @@ mod tests {
                 backlinks: &backlinks,
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
 
@@ -1994,6 +2017,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
 
@@ -2028,6 +2052,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         assert!(page.contains("<style>"), "CSS should be inlined");
@@ -2050,6 +2075,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         assert!(
@@ -2075,6 +2101,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         assert!(
@@ -2096,6 +2123,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         assert!(
@@ -2117,6 +2145,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         assert!(
@@ -2138,6 +2167,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: Some(1234567890),
                 page_url_path: Some("/f.md"),
+            full_width: false,
             },
         );
         assert!(
@@ -2163,6 +2193,7 @@ mod tests {
                 backlinks: &[],
                 file_mtime_secs: None,
                 page_url_path: None,
+            full_width: false,
             },
         );
         assert!(
@@ -2211,6 +2242,54 @@ mod tests {
         assert!(
             html.contains("src=\"./images/fig.png\""),
             "image src should be preserved, got: {html}"
+        );
+    }
+
+    #[test]
+    fn full_width_true_adds_class() {
+        let (body, headings) = render("# Hello\n");
+        let page = build_page_shell(
+            &body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+                full_width: true,
+            },
+            RenderTarget::Html,
+        );
+        assert!(
+            page.contains("<html lang=\"en\" class=\"full-width-on\">"),
+            "full_width: true should add class, got: {}",
+            &page[..200]
+        );
+    }
+
+    #[test]
+    fn full_width_false_no_class() {
+        let (body, headings) = render("# Hello\n");
+        let page = build_page_shell(
+            &body,
+            &headings,
+            Path::new("/r/f.md"),
+            Path::new("/r"),
+            &PageShellContext {
+                frontmatter: None,
+                backlinks: &[],
+                file_mtime_secs: None,
+                page_url_path: None,
+                full_width: false,
+            },
+            RenderTarget::Html,
+        );
+        assert!(
+            page.contains("<html lang=\"en\">"),
+            "full_width: false should not add class, got: {}",
+            &page[..200]
         );
     }
 }

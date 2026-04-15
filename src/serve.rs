@@ -1366,6 +1366,7 @@ async fn serve_handler(State(state): State<Arc<AppState>>, req: Request) -> Resp
             backlinks: backlinks_slice,
             file_mtime_secs,
             page_url_path: Some(&norm_display),
+            full_width: false,
         };
         let page = html::build_page_shell(
             &html_body,

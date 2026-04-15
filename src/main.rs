@@ -96,6 +96,9 @@ enum Commands {
         /// Output file path (defaults to <input-stem>.html)
         #[arg(short, long)]
         output: Option<String>,
+        /// Use constrained content width instead of full width
+        #[arg(long)]
+        constrained: bool,
     },
     /// List all headings in a markdown file
     Headings {
@@ -164,6 +167,7 @@ enum DispatchMode {
     Html {
         file: String,
         output: Option<String>,
+        constrained: bool,
     },
     Headings {
         file: String,
@@ -351,7 +355,15 @@ fn resolve_dispatch_mode() -> DispatchMode {
                 no_open,
                 verbose,
             },
-            Commands::Html { file, output } => DispatchMode::Html { file, output },
+            Commands::Html {
+                file,
+                output,
+                constrained,
+            } => DispatchMode::Html {
+                file,
+                output,
+                constrained,
+            },
             Commands::Headings { file, max_level } => {
                 DispatchMode::Headings { file, max_level }
             }
@@ -403,9 +415,11 @@ fn main() -> io::Result<()> {
                 .map_err(io::Error::other)?;
             rt.block_on(serve::run_serve(file, bind, port, no_open, verbose))
         }
-        DispatchMode::Html { file, output } => {
-            html_export::run_html(&file, output.as_deref())
-        }
+        DispatchMode::Html {
+            file,
+            output,
+            constrained,
+        } => html_export::run_html(&file, output.as_deref(), !constrained),
         DispatchMode::Headings { file, max_level } => run_headings(&file, max_level),
         DispatchMode::Select {
             file,

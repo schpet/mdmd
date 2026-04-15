@@ -11,7 +11,8 @@ use crate::html::{self, PageShellContext, RenderTarget};
 /// # Parameters
 /// - `file`: path to the source markdown file.
 /// - `output`: optional explicit output path; defaults to `<stem>.html` next to the input.
-pub fn run_html(file: &str, output: Option<&str>) -> io::Result<()> {
+/// - `full_width`: whether to render in full-width mode (default `true`).
+pub fn run_html(file: &str, output: Option<&str>, full_width: bool) -> io::Result<()> {
     let input_path = Path::new(file);
 
     // Validate extension (same rules as other file-based commands).
@@ -63,6 +64,7 @@ pub fn run_html(file: &str, output: Option<&str>) -> io::Result<()> {
         backlinks: &[],
         file_mtime_secs: None,
         page_url_path: None,
+        full_width,
     };
     let page = html::build_page_shell(
         &html_body,
