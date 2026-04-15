@@ -686,7 +686,7 @@ This file has changed on disk.\n\
 
     // JS: external for serve, inlined for html.
     let js_fragment = match target {
-        RenderTarget::Serve => format!("<script src=\"/assets/mdmd.js\"></script>"),
+        RenderTarget::Serve => "<script src=\"/assets/mdmd.js\"></script>".to_owned(),
         RenderTarget::Html => format!("<script>\n{}\n</script>", crate::web_assets::JS),
     };
 
